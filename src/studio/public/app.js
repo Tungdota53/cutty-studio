@@ -4,6 +4,8 @@ const credential = new URLSearchParams(location.search).get('token');
 let ws, config, busy = false, currentSession = null, assistant = null, response = '', reconnectTimer, toastTimer;
 let pendingSettings = null;
 let currentContext = null;
+let teamData = null, skillSearchTimer;
+const liveAgents = new Map();
 const approvalQueue = [];
 let approvalsTimer;
 function send(payload) {
@@ -17,6 +19,7 @@ function setBusy(value) {
   $('new-chat').disabled = value; $('workspace-button').disabled = value; $('mode').disabled = value;
   $('settings-form').querySelector('[type=submit]').disabled = value;
   $('compact-context').disabled = value || !currentSession;
+  $('team-form').querySelector('[type=submit]').disabled = value;
   $('run-text').textContent = 'Đang xử lý…';
 }
 function configure(next) {
@@ -132,7 +135,7 @@ function answerApproval(approved) {
 }
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/${credential ? '?token=' + encodeURIComponent(credential) : ''}`);
-  ws.onopen = () => { $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
+  ws.onopen = () => { send({ type: 'get_team' }); $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
   ws.onclose = () => {
     $('connection-dot').classList.remove('online'); $('connection-text').textContent = 'Đang kết nối lại'; $('send-button').disabled = true;
     setBusy(false); approvalQueue.length = 0; nextApproval();
@@ -142,6 +145,8 @@ function connect() {
   ws.onmessage = async ({ data }) => {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     switch (msg.type) {
+      case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
+      case 'skill_results': showSkills(msg.skills || []); break;
       case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); break;
       case 'configured':
         configure(msg.config);
@@ -169,10 +174,10 @@ function connect() {
       case 'stream_end': if (assistant) renderText(assistant, response); scrollEnd(); break;
       case 'thinking': $('run-text').textContent = 'Đang phân tích yêu cầu…'; break;
       case 'terminal_log': log(msg.text || ''); break;
-      case 'teamwork_event': log(msg.event.message || `${msg.event.role || 'Agent'} · ${msg.event.type}`); $('run-text').textContent = msg.event.message || 'Nhóm đang thực hiện tác vụ…'; break;
+      case 'teamwork_event': showAgent(msg.event); log(msg.event.message || `${msg.event.role || 'Agent'} · ${msg.event.type}`); $('run-text').textContent = msg.event.message || 'Nhóm đang thực hiện tác vụ…'; break;
       case 'diff': showDiff(msg.diff || ''); break;
       case 'approval_request': approvalQueue.push({ ...msg, deadline: Date.now() + msg.timeoutMs }); nextApproval(); break;
-      case 'error': toast(msg.message); if (pendingSettings) { $('settings-status').textContent = msg.message; pendingSettings = null; } break;
+      case 'error': toast(msg.message); if ($('team-dialog').open) $('team-status').textContent = msg.message; if (pendingSettings) { $('settings-status').textContent = msg.message; pendingSettings = null; } break;
     }
   };
 }
@@ -223,4 +228,65 @@ $('accept-approval').onclick = () => answerApproval(true); $('reject-approval').
 $('approval-dialog').oncancel = event => { event.preventDefault(); answerApproval(false); };
 if (window.desktop) { $('window-actions').hidden = false; for (const button of document.querySelectorAll('[data-window]')) button.onclick = () => window.desktop.control(button.dataset.window); }
 document.addEventListener('keydown', event => { if (event.ctrlKey && event.key.toLowerCase() === 'n') { event.preventDefault(); newChat(); } if (event.ctrlKey && event.key === ',') { event.preventDefault(); openSettings(); } });
+function showSkills(skills) {
+  $('skill-results').replaceChildren();
+  for (const skill of skills.slice(0, 20)) {
+    const row = document.createElement('p');
+    const name = document.createElement('strong'); name.textContent = skill.name;
+    const detail = document.createElement('small'); detail.textContent = `${skill.id} · ${skill.description}`;
+    row.append(name, detail); $('skill-results').append(row);
+  }
+  if (!skills.length) $('skill-results').textContent = 'Không tìm thấy skill phù hợp.';
+}
+function showTeam(data) {
+  teamData = data; $('team-max').value = data.maxAgents;
+  const previousRole = $('role-picker').value || 'coder';
+  $('role-picker').replaceChildren();
+  for (const role of data.roles) { const option = document.createElement('option'); option.value = role.id; option.textContent = `${role.label} · ${role.id}`; $('role-picker').append(option); }
+  $('role-picker').value = previousRole;
+  $('role-cards').replaceChildren();
+  for (const role of data.roles) {
+    const card = document.createElement('section'); card.className = 'role-card'; card.dataset.role = role.id; card.hidden = role.id !== previousRole;
+    const title = document.createElement('h3'); title.textContent = `${role.label} · ${role.id}`;
+    const description = document.createElement('p'); description.textContent = role.responsibility;
+    const access = document.createElement('small'); access.textContent = role.readOnly ? 'Công cụ chỉ đọc' : role.id === 'tester' ? 'Chạy kiểm thử/lệnh; chặn công cụ sửa tệp' : 'Đọc, sửa và chạy lệnh trong workspace';
+    const modelLabel = document.createElement('label'); modelLabel.className = 'field'; modelLabel.textContent = 'Model riêng';
+    const model = document.createElement('input'); model.dataset.field = 'model'; model.value = role.model || ''; model.placeholder = 'Dùng model mặc định'; modelLabel.append(model);
+    const instructionsLabel = document.createElement('label'); instructionsLabel.className = 'field'; instructionsLabel.textContent = 'Hướng dẫn cho vai';
+    const instructions = document.createElement('textarea'); instructions.dataset.field = 'instructions'; instructions.value = role.instructions; instructions.maxLength = 6000; instructions.rows = 2; instructionsLabel.append(instructions);
+    const autoLabel = document.createElement('label'); autoLabel.className = 'skill-option';
+    const auto = document.createElement('input'); auto.type = 'checkbox'; auto.dataset.field = 'autoSkills'; auto.checked = role.autoSkills; autoLabel.append(auto, document.createTextNode('Tự chọn thêm skill của dự án theo nhiệm vụ'));
+    const choices = document.createElement('div'); choices.className = 'skill-choices';
+    for (const skill of [...data.skills].sort((a, b) => Number(b.source === 'builtin') - Number(a.source === 'builtin'))) {
+      const label = document.createElement('label'); label.className = 'skill-option'; label.title = skill.description;
+      const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.skill = skill.id; input.checked = role.skills.includes(skill.id) || role.skills.includes(skill.name);
+      label.append(input, document.createTextNode(`${skill.name} · ${skill.source}`)); choices.append(label);
+    }
+    card.append(title, description, access, modelLabel, instructionsLabel, autoLabel, choices); $('role-cards').append(card);
+  }
+  showSkills(data.skills);
+}
+function showAgent(event) {
+  if (event.type === 'session_start') { liveAgents.clear(); $('live-agents').replaceChildren(); }
+  if (!event.agentId) return;
+  const state = { ...liveAgents.get(event.agentId), ...event }; liveAgents.set(event.agentId, state);
+  $('live-agents').replaceChildren();
+  for (const [id, agent] of liveAgents) {
+    const row = document.createElement('p'); row.textContent = `${id} · ${agent.role} · ${agent.status || agent.type}\n${agent.taskId || ''} ${agent.model || ''}\nSkill: ${(agent.skills || []).join(', ') || 'Đang chọn'}`;
+    $('live-agents').append(row);
+  }
+}
+$('team-button').onclick = () => { $('team-status').textContent = ''; $('team-dialog').showModal(); send({ type: 'get_team' }); };
+$('role-picker').onchange = () => { for (const card of $('role-cards').children) card.hidden = card.dataset.role !== $('role-picker').value; };
+$('skill-search').oninput = () => { clearTimeout(skillSearchTimer); skillSearchTimer = setTimeout(() => send({ type: 'search_skills', query: $('skill-search').value }), 200); };
+$('team-form').onsubmit = event => {
+  event.preventDefault(); if (busy) return toast('Hãy dừng tác vụ trước khi đổi phân vai.');
+  const profiles = {};
+  for (const card of $('role-cards').children) profiles[card.dataset.role] = {
+    model: card.querySelector('[data-field=model]').value.trim(), instructions: card.querySelector('[data-field=instructions]').value,
+    autoSkills: card.querySelector('[data-field=autoSkills]').checked,
+    skills: [...card.querySelectorAll('[data-skill]:checked')].map(node => node.dataset.skill)
+  };
+  send({ type: 'configure_team', profiles, maxAgents: Number($('team-max').value) });
+};
 connect();

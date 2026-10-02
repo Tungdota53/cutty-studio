@@ -27,6 +27,8 @@ export const COMMAND_DEFINITIONS: CommandDef[] = [
   { command: '/quality <fast|balanced|high|max>', description: 'View or set execution quality preset', category: 'Models' },
 
   // Teamwork
+  { command: '/skills [query]', description: 'Search available workspace and bundled skills', category: 'Teamwork' },
+  { command: '/roles', description: 'Show role responsibilities and selected skills', category: 'Teamwork' },
   { command: '/teamwork <task>', description: 'Launch multi-agent cooperative workflow (DAG scheduler)', category: 'Teamwork' },
   { command: '/agents', description: 'View active agents status and assigned roles', category: 'Teamwork' },
   { command: '/tasks', description: 'View tasks in current teamwork plan', category: 'Teamwork' },

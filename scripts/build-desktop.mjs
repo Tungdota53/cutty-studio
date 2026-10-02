@@ -11,6 +11,7 @@ function copyTree(source, destination) {
   } else fs.copyFileSync(source, destination);
 }
 copyTree('src/studio/public', 'build/runtime/public');
+copyTree('src/skills', 'build/runtime/skills');
 for (const name of ['better-sqlite3', 'bindings', 'file-uri-to-path']) {
   const destination = path.join('build/runtime/node_modules', name);
   fs.mkdirSync(destination, { recursive: true });

@@ -34,6 +34,18 @@ app.on('browser-window-created', (_, win) => {
       await new Promise(resolve => setTimeout(resolve, 350));
       fs.writeFileSync('release/preview.png', (await win.webContents.capturePage()).toPNG());
       const port = model.address().port;
+      await win.webContents.executeJavaScript(`document.getElementById('team-button').click();`);
+      await wait(win, `document.querySelectorAll('.role-card').length===7`);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-role=reviewer] [data-field=instructions]').value='Review authentication with evidence';document.getElementById('team-form').requestSubmit();`);
+      await wait(win, `document.getElementById('team-status').textContent.includes('Đã lưu')`);
+      const profiles = JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8'));
+      assert.equal(profiles.agentProfiles.reviewer.instructions, 'Review authentication with evidence');
+      assert(profiles.agentProfiles.coder.skills.includes('builtin:scoped-implementation'));
+      await win.webContents.executeJavaScript(`document.getElementById('skill-search').value='review';document.getElementById('skill-search').dispatchEvent(new Event('input'));`);
+      await wait(win, `document.getElementById('skill-results').textContent.includes('code-review') && !document.getElementById('skill-results').textContent.includes('imagegen')`);
+      await new Promise(resolve => setTimeout(resolve, 350));
+      fs.writeFileSync('release/preview-team.png', (await win.webContents.capturePage()).toPNG());
+      await win.webContents.executeJavaScript(`document.getElementById('team-dialog').close();`);
       await win.webContents.executeJavaScript(`document.getElementById('settings-button').click();document.getElementById('base-url').value='http://127.0.0.1:${port}/v1';document.getElementById('model-input').value='smoke-model';document.getElementById('api-key').value='smoke-private-key';document.getElementById('context-window').value=16384;document.getElementById('output-tokens').value=2048;document.getElementById('settings-form').requestSubmit();`);
       await wait(win, `!document.getElementById('settings-dialog').open && document.getElementById('model-name').textContent === 'smoke-model'`);
       const saved = fs.readFileSync(path.join(root, 'settings.json'), 'utf8'); assert(!saved.includes('smoke-private-key')); assert(saved.includes('encryptedKey'));
@@ -41,6 +53,7 @@ app.on('browser-window-created', (_, win) => {
       await wait(win, `document.querySelector('.message.assistant .message-content strong') && !document.getElementById('stop-button').hidden === false`);
       assert.equal(requests.at(-1).model, 'smoke-model');
       assert.equal(requests.at(-1).max_tokens, 2048);
+      assert(requests.at(-1).messages[0].content.includes('builtin:workspace-assistant'));
       await wait(win, `document.getElementById('usage-output').textContent==='24'`);
       await win.webContents.executeJavaScript(`document.getElementById('prompt').value='Tiếp tục từ kết quả trên';document.getElementById('composer').requestSubmit();`);
       await wait(win, `document.querySelectorAll('.message.assistant').length===2 && document.getElementById('stop-button').hidden`);
@@ -55,7 +68,7 @@ app.on('browser-window-created', (_, win) => {
       await wait(win, `document.querySelectorAll('.message').length >= 2`);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.quit(); }
   });

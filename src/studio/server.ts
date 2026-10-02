@@ -15,6 +15,8 @@ import { Teamwork } from '../teamwork.js';
 import crypto from 'node:crypto';
 import { ConversationContext, contextLimits } from '../conversation.js';
 import { systemPrompt } from '../prompts.js';
+import { roleCatalog, roleProfile, roles, teamSchema } from '../roles.js';
+import { SkillLibrary } from '../skills.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -100,6 +102,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let activeAbort: AbortController | undefined;
   let activeTeam: Teamwork | undefined;
   let busy = false;
+  const skills = new SkillLibrary(c.workspace);
+  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents });
   const token = typeof options === 'object' ? options.token : undefined;
 
   const clients = new Set<WebSocket>();
@@ -318,7 +322,21 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
       }
 
       try {
-        if (msg.type === 'stop') {
+        if (msg.type === 'get_team') {
+          ws.send(JSON.stringify({ type: 'team_config', ...teamConfig() }));
+        } else if (msg.type === 'configure_team') {
+          if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi phân vai.');
+          const data = teamSchema.parse(msg);
+          const next = { ...c, maxAgents: data.maxAgents ?? c.maxAgents, agentProfiles: { ...c.agentProfiles, ...data.profiles } };
+          for (const role of roles) skills.select(role, '', next);
+          const file = path.join(c.workspace, '.vibe', 'config.json');
+          const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+          fs.writeFileSync(file, JSON.stringify({ ...saved, agentProfiles: next.agentProfiles, maxAgents: next.maxAgents }, null, 2));
+          c = next; client = new ModelClient(c); router = new ModelRouter(c);
+          broadcast({ type: 'team_config', saved: true, ...teamConfig() });
+        } else if (msg.type === 'search_skills') {
+          ws.send(JSON.stringify({ type: 'skill_results', skills: skills.search(String(msg.query || '')).map(({ file, ...skill }) => skill) }));
+        } else if (msg.type === 'stop') {
           activeAbort?.abort();
           activeTeam?.stop();
           for (const [id, pending] of pendingApprovals) {
@@ -528,7 +546,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           }
         }
       } catch (err: any) {
-        if (msg.type === 'configure' || msg.type === 'get_conversation') {
+        if (['configure', 'configure_team', 'get_team', 'search_skills', 'get_conversation'].includes(msg.type)) {
           ws.send(JSON.stringify({ type: 'error', message: err?.message || String(err) }));
           return;
         }

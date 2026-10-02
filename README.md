@@ -2,6 +2,19 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Phân vai agent và skill — 0.3.0
+
+Mở **Nhóm agent** để cấu hình bảy vai: điều phối, lập kế hoạch, lập trình, kiểm thử, rà soát, đánh giá và trợ lý. Mỗi vai có hướng dẫn, model riêng, danh sách skill và tùy chọn tự chọn thêm skill theo nhiệm vụ. Cấu hình lưu tại `.vibe/config.json` của dự án. Planner phân vai và skill cho từng task; task và agent có ID riêng, cùng trạng thái và danh sách skill đã nạp.
+
+- Có sẵn bảy skill cho bảy vai, đóng gói trong cả Setup và Portable.
+- Tìm skill trong `.agents/skills/<tên>/SKILL.md`, `.vibe/skills/<tên>/SKILL.md` và `~/.codex/skills`. Tự nạp thêm chỉ áp dụng cho skill của dự án; skill người dùng phải được chọn rõ ràng.
+- Công cụ `search_skills`, `load_skill`, `read_skill_resource` cho phép agent tìm hướng dẫn, nạp vào context và đọc tài nguyên tương đối trong thư mục skill. Skill không cài thêm plugin hoặc cung cấp những công cụ mà app chưa có.
+- Các skill được chọn được đưa vào system context của agent, giữ qua các lượt nén trong lần thực hiện task. Giới hạn mỗi skill 16.000 ký tự, tổng 24.000 ký tự; skill không hợp lệ báo lỗi thay vì bị cắt âm thầm.
+- Planner, reviewer, judge và orchestrator chỉ có công cụ đọc/tìm kiếm; chặn công cụ sửa tệp, chạy lệnh và chạy test ở cả schema và lúc thực thi. Tester được chạy test/lệnh nhưng bị chặn công cụ sửa tệp. Lệnh shell vẫn có thể tạo hoặc thay đổi tệp, nên quyền của tester không phải sandbox chỉ đọc.
+- CLI: `/roles` xem phân vai, `/skills <chủ đề>` tìm skill. Model đã gán cho vai được thử trước model dự phòng.
+
+![Cấu hình phân vai và skill](docs/team-preview.png)
+
 ## Context và đầu vào / đầu ra — 0.2.0
 
 - Phản hồi assistant, lời gọi công cụ và kết quả được đưa vào context của lượt sau; trạng thái này được lưu theo từng chat và mở lại sau khi khởi động app.
@@ -20,8 +33,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.2.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.2.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.3.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.3.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

@@ -1,6 +1,6 @@
 {
   "name": "vibe-cli-teamwork",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Windows coding workspace with persistent context and multi-agent teamwork",
   "type": "module",
   "main": "desktop/main.cjs",
@@ -28,15 +28,43 @@
   "build": {
     "appId": "studio.vibe.desktop",
     "productName": "Vibe Studio",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "desktop/**/*", "package.json"],
-    "extraResources": [{ "from": "build/runtime", "to": "runtime" }],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime"
+      }
+    ],
     "npmRebuild": false,
     "afterPack": "scripts/after-pack.cjs",
-    "asarUnpack": ["**/*.node"],
-    "win": { "target": ["nsis", "portable"], "icon": "desktop/icon.ico", "signExecutable": false },
-    "portable": { "artifactName": "Vibe-Studio-${version}-${arch}-Portable.${ext}" },
-    "nsis": { "artifactName": "Vibe-Studio-${version}-${arch}-Setup.${ext}", "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true }
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "desktop/icon.ico",
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "Vibe-Studio-${version}-${arch}-Portable.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Vibe-Studio-${version}-${arch}-Setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   },
   "dependencies": {
     "@clack/prompts": "^1.8.1",

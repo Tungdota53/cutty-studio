@@ -26,6 +26,8 @@ import { startStudio, type StudioServerInstance } from './studio/server.js';
 import crypto from 'node:crypto';
 import { ConversationContext } from './conversation.js';
 import { systemPrompt } from './prompts.js';
+import { SkillLibrary } from './skills.js';
+import { roles, roleCatalog, roleProfile } from './roles.js';
 
 
 let c = loadConfig();
@@ -54,6 +56,14 @@ async function command(line: string): Promise<boolean> {
   const arg = parts.join(' ').trim();
 
   switch (cmd) {
+    case 'skills': {
+      console.log(renderTable(['Skill ID', 'Description'], new SkillLibrary(c.workspace).search(arg).map(skill => [skill.id, skill.description])));
+      break;
+    }
+    case 'roles': {
+      console.log(renderTable(['Role', 'Responsibility', 'Model', 'Skills'], roles.map(role => [role, roleCatalog[role].responsibility, roleProfile(role, c).model || c.model, roleProfile(role, c).skills.join(', ')])));
+      break;
+    }
     case 'studio': {
       if (studioInstance) {
         console.log(`Vibe Studio đang chạy tại: ${studioInstance.url}`);

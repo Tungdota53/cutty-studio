@@ -29,6 +29,21 @@ function connect(url: string) {
   } };
 }
 describe('Desktop backend', () => {
+  it('persists role profiles without credentials and rejects invalid assignments', async () => {
+    const server = await studio(); const client = connect(server.url); await client.wait('init');
+    client.socket.send(JSON.stringify({ type: 'get_team' }));
+    const catalog = await client.wait('team_config'); expect(catalog.roles).toHaveLength(7);
+    expect(catalog.skills.find((skill: any) => skill.id === 'builtin:code-review')).toBeTruthy();
+    client.socket.send(JSON.stringify({ type: 'configure_team', profiles: { reviewer: { skills: ['missing'] } } }));
+    expect((await client.wait('error')).message).toContain('Không tìm');
+    client.socket.send(JSON.stringify({ type: 'configure_team', maxAgents: 3, profiles: { reviewer: { instructions: 'Check auth', skills: ['builtin:code-review'], model: 'review-model', autoSkills: false } } }));
+    const saved = await client.wait('team_config'); expect(saved.saved).toBe(true);
+    expect(saved.roles.find((role: any) => role.id === 'reviewer')).toMatchObject({ model: 'review-model', instructions: 'Check auth', autoSkills: false });
+    const config = JSON.parse(fs.readFileSync(path.join(roots.at(-1)!, '.vibe', 'config.json'), 'utf8'));
+    expect(config.agentProfiles.reviewer.skills).toEqual(['builtin:code-review']); expect(config.apiKey).toBeUndefined();
+    client.socket.send(JSON.stringify({ type: 'search_skills', query: 'review' }));
+    expect((await client.wait('skill_results')).skills.some((skill: any) => skill.id === 'builtin:code-review')).toBe(true);
+  });
   it('protects HTML, assets and API with the desktop token', async () => {
     const server = await studio('private-token');
     for (const route of ['/', '/app.css', '/app.js', '/api/status']) {

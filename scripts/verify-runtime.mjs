@@ -25,7 +25,16 @@ try {
   for (const route of ['/', '/app.css', '/app.js']) assert.equal((await fetch(url + route + '?token=runtime-smoke-token')).status, 200);
   const socket = new WebSocket(url.replace('http:', 'ws:') + '/?token=runtime-smoke-token');
   const initial = await new Promise((resolve, reject) => { socket.once('message', data => resolve(JSON.parse(String(data)))); socket.once('error', reject); });
-  assert.equal(initial.type, 'init'); socket.close();
+  assert.equal(initial.type, 'init');
+  const teamReady = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Skill catalog timeout')), 5000);
+    socket.once('message', data => { clearTimeout(timer); resolve(JSON.parse(String(data))); });
+  });
+  socket.send(JSON.stringify({ type: 'get_team' }));
+  const team = await teamReady;
+  assert.equal(team.type, 'team_config'); assert.equal(team.roles.length, 7);
+  for (const id of ['repository-planning', 'scoped-implementation', 'code-review', 'evidence-testing']) assert(team.skills.some(skill => skill.id === 'builtin:' + id), `Missing bundled skill: ${id}`);
+  socket.close();
   child.send({ type: 'shutdown' });
   await new Promise(resolve => child.once('exit', resolve));
   fs.writeFileSync('release/runtime-result.json', JSON.stringify({ ok: true, runtime, checks: ['dependency files and SHA-256 manifest', 'bundled Node executable', 'bundled SQLite native module', 'authenticated HTTP assets', 'authenticated websocket', 'clean shutdown'] }, null, 2));

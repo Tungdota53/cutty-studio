@@ -13,6 +13,22 @@ import { assertDag, updateReady } from './dag.js';
 import { Worktrees } from './worktree.js';
 import { taskHandoff } from './handoff.js';
 import { newConversation } from './conversation.js';
+import { z } from 'zod';
+import { roleSchema, roleCatalog } from './roles.js';
+import { SkillLibrary } from './skills.js';
+
+export function parseTeamPlan(raw: string): Task[] {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Planner không trả JSON');
+  const plan = z.object({ tasks: z.array(z.object({
+    id: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(), title: z.string().min(1).max(300), description: z.string().max(16000).optional(),
+    role: roleSchema.default('coder'), dependencies: z.array(z.string()).default([]), expectedFiles: z.array(z.string()).default([]), skills: z.array(z.string().max(120)).max(8).default([])
+  })).min(1).max(40) }).parse(JSON.parse(match[0]));
+  const tasks: Task[] = plan.tasks.map((task, index) => ({ ...task, id: task.id || `T${index + 1}`, description: task.description || task.title, status: task.dependencies.length ? 'pending' : 'ready', createdAt: new Date().toISOString(), retries: 0 }));
+  if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Task ID bị trùng');
+  assertDag(tasks);
+  return tasks;
+}
 
 export class Teamwork {
   tasks: Task[] = [];
@@ -32,20 +48,7 @@ export class Teamwork {
   }
 
   private parsePlan(raw: string): Task[] {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('Planner không trả JSON');
-    const j = JSON.parse(match[0]);
-    return j.tasks.map((x: any, i: number) => ({
-      id: String(x.id || `T${i + 1}`),
-      title: String(x.title),
-      description: String(x.description || x.title),
-      role: (x.role || 'coder') as Role,
-      status: x.dependencies?.length ? 'pending' : 'ready',
-      dependencies: (x.dependencies || []).map(String),
-      expectedFiles: x.expectedFiles || [],
-      createdAt: new Date().toISOString(),
-      retries: 0,
-    }));
+    return parseTeamPlan(raw);
   }
 
   async run(
@@ -74,7 +77,8 @@ export class Teamwork {
       timestamp: new Date().toISOString(),
     });
 
-    const baseTools = new Tools(this.c.workspace, this.approve);
+    const library = new SkillLibrary(this.c.workspace);
+    const baseTools = new Tools(this.c.workspace, this.approve, 'planner', library);
     const plannerId = 'agent-plan-01';
     const planner = new Agent(plannerId, 'planner', this.c.workspace, this.client, this.router, baseTools, log);
 
@@ -93,8 +97,8 @@ export class Teamwork {
     let planRaw: string;
     try {
       planRaw = await planner.run(
-        `Inspect repository and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder|tester|reviewer","dependencies":[],"expectedFiles":[]}]} Include implementation tasks, a tester task depending on coders, then reviewer depending on tester.`,
-        this.abort.signal
+        `Inspect repository and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Allowed roles: ${JSON.stringify(roleCatalog)}. Include implementation tasks, a tester task depending on coders, then reviewer depending on tester. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
+        this.abort.signal, undefined, [], { onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' }) }
       );
       this.tasks = this.parsePlan(planRaw);
       assertDag(this.tasks);
@@ -152,7 +156,7 @@ export class Teamwork {
         ready.map(async (t, index) => {
           t.status = 'running';
           t.startedAt = new Date().toISOString();
-          const aid = `agent-${t.role}-${String(index + 1).padStart(2, '0')}`;
+          const aid = `agent-${t.role}-${String(this.tasks.indexOf(t) + 1).padStart(2, '0')}`;
           t.assignedAgentId = aid;
           let scope = this.c.workspace;
           let selectedModel = this.c.model;
@@ -208,11 +212,18 @@ export class Teamwork {
               timestamp: new Date().toISOString(),
             });
 
-            const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve), log);
+            const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve, t.role, library), log);
             const memoryKey = `${id}:${t.id}`;
             const state = newConversation(taskHandoff(goal, t, this.tasks, Math.floor((this.c.contextWindow || 32768) / 5)));
             t.resultSummary = await agent.run(t.description, this.abort.signal, undefined, [], {
               state,
+              skills: t.skills,
+              skillWorkspace: this.c.workspace,
+              onSkills: skills => {
+                t.loadedSkills = skills.map(skill => skill.id);
+                this.db.task(id, t);
+                emit({ type: 'agent_status', agentId: aid, role: t.role, taskId: t.id, status: 'running', model: selectedModel, skills: t.loadedSkills, message: `${roleCatalog[t.role].label}: đã nạp ${skills.length} skill.` });
+              },
               checkpoint: memory => this.db.saveConversation(memoryKey, memory),
               onItem: item => this.db.archiveItem(memoryKey, item)
             });
