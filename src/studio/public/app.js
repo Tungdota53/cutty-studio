@@ -135,8 +135,9 @@ function answerApproval(approved) {
 }
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/${credential ? '?token=' + encodeURIComponent(credential) : ''}`);
-  ws.onopen = () => { send({ type: 'get_team' }); $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
+  ws.onopen = () => { TeamMap.connection(true); send({ type: 'get_team' }); $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
   ws.onclose = () => {
+    TeamMap.connection(false);
     $('connection-dot').classList.remove('online'); $('connection-text').textContent = 'Đang kết nối lại'; $('send-button').disabled = true;
     setBusy(false); approvalQueue.length = 0; nextApproval();
     clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 2000);
@@ -148,7 +149,7 @@ function connect() {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
       case 'model_catalog': $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
       case 'skill_results': showSkills(msg.skills || []); break;
-      case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); send({ type: 'get_team' }); break;
+      case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); TeamMap.restore(msg.teamworkState); send({ type: 'get_team' }); break;
       case 'configured':
         configure(msg.config);
         if (pendingSettings && window.desktop) {
@@ -159,6 +160,7 @@ function connect() {
       case 'sessions': showHistory(msg.sessions || []); break;
       case 'conversation':
         if (msg.sessionId !== currentSession) break;
+        TeamMap.restore({ sessionId: msg.sessionId.startsWith('session-') ? msg.sessionId : null, tasks: msg.tasks || [], gate: msg.gate, goal: $('chat-title').textContent }, true);
         $('messages').replaceChildren();
         for (const item of msg.messages || []) renderText(addMessage(item.role, item.content), item.content);
         if (!msg.messages?.length) addMessage('assistant', msg.summary || 'Phiên teamwork này chưa có nội dung trò chuyện.');
@@ -169,13 +171,13 @@ function connect() {
       case 'compaction_start': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tóm tắt ngữ cảnh cũ…'; log('Đang nén ngữ cảnh để tiếp tục cuộc trò chuyện.'); } break;
       case 'compaction_end': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tiếp tục với ngữ cảnh đã nén…'; log(`Đã nén ngữ cảnh · lần ${msg.compactions}.`); } break;
       case 'run_start': setBusy(true); break;
-      case 'run_end': setBusy(false); approvalQueue.length = 0; clearTimeout(approvalsTimer); nextApproval(); send({ type: 'get_sessions' }); send({ type: 'get_diff' }); break;
+      case 'run_end': setBusy(false); TeamMap.end(); approvalQueue.length = 0; clearTimeout(approvalsTimer); nextApproval(); send({ type: 'get_sessions' }); send({ type: 'get_diff' }); break;
       case 'stream_chunk':
         if (!assistant) assistant = addMessage('assistant'); response += msg.token || ''; assistant.textContent = response; scrollEnd(); break;
       case 'stream_end': if (assistant) renderText(assistant, response); scrollEnd(); break;
       case 'thinking': $('run-text').textContent = 'Đang phân tích yêu cầu…'; break;
       case 'terminal_log': log(msg.text || ''); break;
-      case 'teamwork_event': showAgent(msg.event); log(msg.event.message || `${msg.event.role || 'Agent'} · ${msg.event.type}`); $('run-text').textContent = msg.event.message || 'Nhóm đang thực hiện tác vụ…'; break;
+      case 'teamwork_event': TeamMap.event(msg.event); showAgent(msg.event); if (msg.event.message) log(msg.event.message); $('run-text').textContent = msg.event.message || msg.event.step || 'Nhóm đang thực hiện tác vụ…'; break;
       case 'diff': showDiff(msg.diff || ''); break;
       case 'approval_request': approvalQueue.push({ ...msg, deadline: Date.now() + msg.timeoutMs }); nextApproval(); break;
       case 'error': toast(msg.message); if ($('team-dialog').open) $('team-status').textContent = msg.message; if (pendingSettings) { $('settings-status').textContent = msg.message; pendingSettings = null; } break;
@@ -184,6 +186,7 @@ function connect() {
 }
 function newChat() {
   if (busy) return;
+  TeamMap.reset(); TeamMap.view('chat');
   currentSession = null; assistant = null; response = ''; $('messages').replaceChildren(); $('welcome').hidden = false; $('chat-title').textContent = 'Cuộc trò chuyện mới'; $('prompt').value = ''; $('prompt').focus();
   showContext(null, '');
   send({ type: 'get_sessions' });
@@ -200,8 +203,8 @@ $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey 
 $('prompt').oninput = () => { $('prompt').style.height = 'auto'; $('prompt').style.height = `${Math.min(180, $('prompt').scrollHeight)}px`; };
 $('stop-button').onclick = () => { send({ type: 'stop' }); $('run-text').textContent = 'Đang dừng…'; };
 $('new-chat').onclick = newChat;
-$('toggle-sidebar').onclick = () => { $('sidebar').hidden = !$('sidebar').hidden; };
-$('toggle-inspector').onclick = () => { $('inspector').hidden = !$('inspector').hidden; if (!$('inspector').hidden) send({ type: 'get_diff' }); };
+$('toggle-sidebar').onclick = () => { if (innerWidth <= 650) { $('sidebar').hidden = false; $('sidebar').classList.toggle('mobile-open'); } else $('sidebar').hidden = !$('sidebar').hidden; };
+$('toggle-inspector').onclick = () => { TeamMap.view('chat'); $('inspector').hidden = !$('inspector').hidden; if (!$('inspector').hidden) send({ type: 'get_diff' }); };
 $('close-inspector').onclick = () => $('inspector').hidden = true;
 $('refresh-diff').onclick = () => send({ type: 'get_diff' });
 $('refresh-sessions').onclick = () => send({ type: 'get_sessions' });
@@ -245,6 +248,7 @@ function showSkills(skills) {
   if (!skills.length) $('skill-results').textContent = 'Không tìm thấy skill phù hợp.';
 }
 function showTeam(data) {
+  TeamMap.configure(data.namedAgents);
   teamData = data; $('team-max').value = data.maxAgents;
   showNamedAgents(data);
   const previousRole = $('role-picker').value || 'coder';

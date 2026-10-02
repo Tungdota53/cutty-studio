@@ -29,7 +29,7 @@ const model = http.createServer((req, res) => {
       if (!tools.length) {
         const write = user === 'smoke-create-page';
         const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: 'smoke-teamwork.html', content: '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
-        res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
+        setTimeout(() => res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'), 450); return;
       }
       if (['smoke-check-page', 'smoke-audit-page'].includes(user) && tools.length === 1) {
         const call = { index: 0, id: 'smoke-executed-check', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: `node -e "process.exit(require('fs').readFileSync('smoke-teamwork.html','utf8').includes('alo alo')?0:1)"` }) } };
@@ -61,6 +61,10 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.capturePage();
       await new Promise(resolve => setTimeout(resolve, 350));
       fs.writeFileSync('release/preview.png', (await win.webContents.capturePage()).toPNG());
+      await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);
+      await wait(win, `document.querySelectorAll('.roster-item').length===15 && !document.getElementById('map-empty').hidden`);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.agent-node').length`), 0);
+      await win.webContents.executeJavaScript(`document.getElementById('map-back').click();`);
       const port = model.address().port;
       await win.webContents.executeJavaScript(`document.getElementById('team-button').click();`);
       await wait(win, `document.querySelectorAll('.role-card').length===7`);
@@ -104,16 +108,54 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.getElementById('new-chat').click();document.querySelector('#history button').click();`);
       await wait(win, `document.querySelectorAll('.message').length >= 2`);
       await win.webContents.executeJavaScript(`document.getElementById('mode').value='teamwork';document.getElementById('prompt').value='smoke-teamwork-page';document.getElementById('composer').requestSubmit();`);
+      await wait(win, `document.querySelector('.agent-node.running') && document.querySelectorAll('.agent-node').length===4`);
+      assert.equal(await win.webContents.executeJavaScript(`document.body.dataset.view`), 'team');
+      win.webContents.debugger.attach('1.3');
+      await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name:'prefers-reduced-motion', value:'reduce' }] });
+      await win.webContents.executeJavaScript(`document.querySelector('.agent-node.running').click();document.getElementById('map-follow').click();`);
+      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('coder')`));
+      await win.webContents.capturePage();
+      await new Promise(resolve => setTimeout(resolve, 150));
+      fs.writeFileSync('release/preview-map-live.png', (await win.webContents.capturePage()).toPNG());
       await wait(win, `document.getElementById('stop-button').hidden && document.getElementById('messages').textContent.includes('Kết quả Teamwork')`);
       assert.equal(fs.readFileSync(path.join(root, 'smoke-teamwork.html'), 'utf8'), '<h1>alo alo</h1>');
       const report = await win.webContents.executeJavaScript(`document.getElementById('messages').textContent`);
       assert(!report.includes(': failed')); assert(!report.includes(': blocked')); assert(!fs.existsSync(path.join(root, '.git')));
       assert(report.includes('Nghiệm thu: PASS'));
+      await wait(win, `document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS'`);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.map-edge').length`), 3);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.map-edge-flow').length`), 0);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-task=T4]').click();document.getElementById('map-fit').click();`);
+      await wait(win, `document.getElementById('map-detail-content').textContent.includes('Fresh audit')`);
+      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('T3')`));
+      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('Fresh audit')`));
+      const beforeZoom = await win.webContents.executeJavaScript(`document.getElementById('map-zoom-value').textContent`);
+      await win.webContents.executeJavaScript(`document.getElementById('map-zoom-in').click();`);
+      assert.notEqual(await win.webContents.executeJavaScript(`document.getElementById('map-zoom-value').textContent`), beforeZoom);
+      await win.webContents.executeJavaScript(`document.getElementById('map-fit').click();`);
+      await win.webContents.capturePage();
+      await new Promise(resolve => setTimeout(resolve, 400));
+      assert(await win.webContents.executeJavaScript(`Math.abs(document.querySelector('.agent-node').getBoundingClientRect().width - 254 * parseInt(document.getElementById('map-zoom-value').textContent) / 100) < 3`));
+      assert.equal(await win.webContents.executeJavaScript(`getComputedStyle(document.querySelector('.agent-node')).animationName`), 'none');
+      fs.writeFileSync('release/preview-map.png', (await win.webContents.capturePage()).toPNG());
+      await win.webContents.executeJavaScript(`location.reload();`);
+      await wait(win, `document.getElementById('connection-text').textContent==='Đã kết nối' && document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS'`);
+      await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);
+      await win.webContents.executeJavaScript(`document.querySelector('#history button[title*="smoke-teamwork-page"]').click();`);
+      await wait(win, `document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS' && document.getElementById('map-session-label').textContent==='Phiên Teamwork'`);
+      // History restores task states and the actual persisted acceptance verdict.
+      win.setMinimumSize(480, 600); win.setSize(620, 780);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      assert(await win.webContents.executeJavaScript(`document.body.scrollWidth <= innerWidth`));
+      await win.webContents.executeJavaScript(`document.getElementById('toggle-sidebar').click();`);
+      assert(await win.webContents.executeJavaScript(`document.getElementById('sidebar').classList.contains('mobile-open')`));
+      await win.webContents.executeJavaScript(`document.getElementById('toggle-sidebar').click();`);
+      win.setSize(1320, 900);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
-    } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.quit(); }
+    } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.exit(1); }
   });
 });
 model.listen(0, '127.0.0.1', () => require('../desktop/main.cjs'));

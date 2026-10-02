@@ -39,7 +39,14 @@ describe('Teamwork workspace mode', () => {
       if (request !== 'create-page') { expect(fs.readFileSync(path.join(dir, 'index.html'), 'utf8')).toContain('alo alo'); checked.push(request!); }
       return { content: 'Verified page evidence', toolCalls: [] };
     });
-    const result = await team.run('Tạo trang alo alo');
+    const events: any[] = [];
+    const result = await team.run('Tạo trang alo alo', event => { if (typeof event !== 'string') events.push(structuredClone(event)); });
+    const initial = events.find(event => event.type === 'task_snapshot');
+    expect(initial.sessionId).toBe(result.id);
+    expect(initial.tasks.find((task: any) => task.id === 'T3').dependencies).toEqual(['T2']);
+    expect(events.filter(event => event.type === 'task_snapshot').at(-1).tasks.every((task: any) => task.status === 'completed')).toBe(true);
+    expect(events.find(event => event.type === 'session_end').gate.verdict).toBe('UNVERIFIED');
+    expect(events.some(event => event.type === 'agent_status' && event.step === 'write_file')).toBe(true);
     expect(result.status).toBe('completed'); expect(result.workspaceMode).toBe('shared-folder'); expect(checked).toEqual(['check-page', 'review-page']);
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false);
     expect(store.tasks(result.id).map(task => task.status)).toEqual(['completed', 'completed', 'completed']);

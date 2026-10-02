@@ -2,6 +2,16 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Giao diện và sơ đồ agent — 0.7.0
+
+Giao diện mới dùng nền tối xanh, điểm nhấn mint, chuyển động cho card/panel/dialog, trạng thái chạy và đường nối tác vụ. Tự tắt animation và cuộn mượt khi hệ điều hành bật giảm chuyển động.
+
+- **Sơ đồ agent**: xem DAG phụ thuộc, các pha, số tác vụ chạy/hoàn tất/lỗi và gate nghiệm thu từ backend thật. Phiên mới tự mở sơ đồ; nút **Về trò chuyện** giúp quay lại chat.
+- Bấm tác vụ để xem agent, model, skill, dependency, tệp được giao, bước hiện tại và kết quả/lỗi. Có nhật ký trực tiếp, phóng to/thu nhỏ, vừa khung và bật/tắt theo dõi tác vụ đang chạy.
+- Tải lại giao diện phục hồi trạng thái phiên hiện tại. Mở phiên Teamwork trong lịch sử phục hồi các tác vụ và gate đã lưu; phiên dở dang không được trình bày như đang chạy trực tiếp. Việc này không tự chạy lại scheduler sau khi thoát app.
+- Bố cục tự điều chỉnh theo chiều rộng cửa sổ. Tác vụ và đường nối chỉ được tạo từ kế hoạch/sự kiện thật; màn hình chưa chạy hiển thị roster đã cấu hình.
+
+![Sơ đồ agent đang hoạt động](docs/agent-map-preview.png)
 ## Quy trình Teamwork theo mẫu Anti — 0.6.0
 
 Đã đối chiếu 111 tài liệu của 25 agent trong mẫu dự án và tài liệu chính thức Antigravity; tổng hợp tại [Quy trình Teamwork](docs/anti-teamwork-protocol.md). App bổ sung **Backend Spec Miner, UI Spec Miner và Final Victory Auditor**, nâng roster mặc định lên **15 agent** với model riêng.
@@ -72,8 +82,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.6.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.6.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.7.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.7.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

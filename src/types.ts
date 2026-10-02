@@ -16,6 +16,8 @@ export type TeamworkEventType =
   | 'task_start'
   | 'task_complete'
   | 'task_failed'
+  | 'task_snapshot'
+  | 'session_end'
   | 'agent_status';
 
 export interface TeamworkEvent {

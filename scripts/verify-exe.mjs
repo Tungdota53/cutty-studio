@@ -36,7 +36,13 @@ try {
   assert.equal(state.desktop, 'object'); assert.equal(state.node, 'undefined'); assert.equal(state.workspace, workspace); assert.equal(state.connection, 'Đã kết nối');
   const token = new URL(target.url).searchParams.get('token');
   const response = await (await fetch(new URL('/api/status?token=' + token, target.url))).json(); assert(response.ok);
-  fs.writeFileSync('release/exe-result.json', JSON.stringify({ ok: true, exe, checks: ['Windows executable startup', 'bundled backend connected', 'isolated preload bridge', 'correct workspace', 'authenticated API'] }, null, 2));
+  assert.equal(await evaluate(`typeof window.TeamMap?.event`), 'function');
+  await evaluate(`document.getElementById('view-team').click()`);
+  assert.equal(await evaluate(`document.body.dataset.view`), 'team');
+  assert.equal(await evaluate(`document.getElementById('team-map-view').hidden`), false);
+  assert.equal(await evaluate(`document.querySelectorAll('.agent-node').length`), 0);
+  assert.equal(await evaluate(`document.getElementById('map-gate').textContent`), 'Chưa chạy');
+  fs.writeFileSync('release/exe-result.json', JSON.stringify({ ok: true, exe, checks: ['Windows executable startup', 'bundled backend connected', 'isolated preload bridge', 'correct workspace', 'authenticated API', 'packaged live map script and navigation', 'no fabricated tasks in empty map'] }, null, 2));
   socket.send(JSON.stringify({ id: ++sequence, method: 'Runtime.evaluate', params: { expression: "window.desktop.control('close')" } }));
   await new Promise(resolve => { const timer = setTimeout(resolve, 7000); child.once('exit', () => { clearTimeout(timer); resolve(); }); });
   console.log('Windows executable checks passed.');

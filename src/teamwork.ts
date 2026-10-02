@@ -89,6 +89,8 @@ export class Teamwork {
 
     emit({
       type: 'session_start',
+      sessionId: id,
+      goal,
       workspaceMode,
       workspaceReason: git.reason,
       message: `Teamwork: ${id} started for goal: ${goal}`,
@@ -164,6 +166,8 @@ export class Teamwork {
     }
 
     this.tasks.forEach(t => this.db.task(id, t));
+    const snapshot = () => emit({ type: 'task_snapshot', sessionId: id, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task) })), timestamp: new Date().toISOString() });
+    snapshot();
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
     fs.writeFileSync(path.join(sessionRoot, 'PROJECT.md'), `# Teamwork\n\nGoal: ${goal}\n\nWorkspace mode: ${workspaceMode}\n\nWorkflow: survey → specification → implementation/test writing → executed tests → independent review → adversarial checks/audit when warranted. Handoff summaries are claims; acceptance requires recorded tool evidence.\n`);
@@ -175,6 +179,7 @@ export class Teamwork {
         this.db.task(id, t);
       });
       const ready = executionBatch(this.tasks, this.c.maxAgents);
+      snapshot();
       if (!ready.length) {
         if (!this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
           break;
@@ -238,6 +243,8 @@ export class Teamwork {
 
             emit({
               type: 'task_start',
+              title: t.title,
+              dependencies: t.dependencies,
               agentName: assigned?.name,
               configuredAgentId: assigned?.id,
               model: selectedModel,
@@ -306,6 +313,7 @@ export class Teamwork {
               onItem: item => {
                 this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls);
                 step = item.tool_calls?.map(call => call.function.name).join(', ') || (item.role === 'tool' ? `Finished ${calls.get(item.tool_call_id || '') || 'tool'}` : item.role);
+                emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', step, timestamp: new Date().toISOString() });
                 progress();
               }
             });
@@ -373,6 +381,7 @@ export class Teamwork {
           } finally {
             if (heartbeat) clearInterval(heartbeat);
             this.db.task(id, t);
+            snapshot();
             if (!fs.existsSync(path.join(sessionRoot, 'agents', aid, 'handoff.json'))) writeAgentArtifact(sessionRoot, aid, 'handoff.json', JSON.stringify(structuredHandoff(t, evidence.get(t.id)), null, 2));
             const report = attemptReport || structuredHandoff(t, evidence.get(t.id));
             writeAgentArtifact(sessionRoot, aid, 'progress.md', `${String(report.status).toUpperCase()}\n\n${t.error || ''}\n`);
@@ -392,6 +401,7 @@ export class Teamwork {
     fs.writeFileSync(path.join(sessionRoot, 'gate.json'), JSON.stringify({ ...gate, repairRounds, tasks: this.tasks.map(task => ({ id: task.id, phase: taskPhase(task), status: task.status, evidence: evidence.get(task.id) || null })) }, null, 2));
     const requirements = this.tasks.flatMap(task => (task.acceptanceCriteria || []).map(criterion => ({ taskId: task.id, criterion, requiredCommands: task.verificationCommands || [], checks: evidence.get(task.id)?.checks || [], stale: evidence.get(task.id)?.stale || false })));
     fs.writeFileSync(path.join(sessionRoot, 'requirements.json'), JSON.stringify({ goal, criteria: requirements, note: 'Natural-language criteria are declared contracts. Recorded execution evidence does not automatically prove every criterion; independent review/audit must evaluate them.' }, null, 2));
+    emit({ type: 'session_end', sessionId: id, status, gate, timestamp: new Date().toISOString() });
 
     return {
       id,

@@ -12,6 +12,7 @@ import { ModelRouter } from '../router.js';
 import { Tools, toolDefinitions } from '../tools.js';
 import { Agent } from '../agent.js';
 import { Teamwork } from '../teamwork.js';
+import { taskPhase } from '../team-protocol.js';
 import crypto from 'node:crypto';
 import { ConversationContext, contextLimits } from '../conversation.js';
 import { systemPrompt } from '../prompts.js';
@@ -101,6 +102,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let router = new ModelRouter(c);
   let activeAbort: AbortController | undefined;
   let activeTeam: Teamwork | undefined;
+  let teamworkState: any = null;
   let busy = false;
   const skills = new SkillLibrary(c.workspace);
   const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents });
@@ -190,7 +192,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         res.writeHead(401); res.end('Unauthorized'); return;
       }
 
-      if (pathname === '/app.css' || pathname === '/app.js') {
+      if (pathname === '/app.css' || pathname === '/app.js' || pathname === '/team-map.js') {
         res.writeHead(200, { 'Content-Type': pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         res.end(fs.readFileSync(path.join(__dirname, 'public', pathname.slice(1))));
         return;
@@ -309,6 +311,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         sessions: db.sessions(),
         routerMetrics: router.status(),
         busy,
+        teamworkState,
       })
     );
 
@@ -379,10 +382,15 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         } else if (msg.type === 'get_conversation') {
           const sessionId = String(msg.sessionId || '');
           const rows = db.db.prepare('SELECT agent_id,content FROM messages WHERE session_id=? ORDER BY id').all(sessionId) as { agent_id: string; content: string }[];
-          const tasks = db.tasks(sessionId);
+          const tasks = db.tasks(sessionId).map(task => ({ ...task, phase: taskPhase(task) }));
+          let gate = null;
+          if (/^session-[a-f0-9]{8}$/.test(sessionId)) {
+            try { const saved = JSON.parse(fs.readFileSync(path.join(c.workspace, '.vibe', 'sessions', sessionId, 'gate.json'), 'utf8')); gate = { verdict: saved.verdict, reasons: saved.reasons }; }
+            catch { /* Interrupted or older sessions may have no persisted gate. */ }
+          }
           const memory = db.conversation(sessionId);
           const manager = new ConversationContext(c, memory);
-          ws.send(JSON.stringify({ type: 'conversation', sessionId, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
+          ws.send(JSON.stringify({ type: 'conversation', sessionId, tasks, gate, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
         } else if (msg.type === 'approval_response') {
           const p = pendingApprovals.get(msg.id);
           if (p) {
@@ -430,6 +438,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                 if (typeof ev === 'string') {
                   broadcast({ type: 'terminal_log', text: ev });
                 } else {
+                  if (ev.type === 'session_start') teamworkState = { sessionId: ev.sessionId, goal: ev.goal, tasks: [], status: 'running' };
+                  if (ev.type === 'task_snapshot' || ev.type === 'session_end') teamworkState = { ...teamworkState, ...ev };
                   broadcast({ type: 'teamwork_event', event: ev });
                 }
               });
@@ -551,6 +561,12 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             broadcast({ type: 'stream_end' });
           }
           } finally {
+            if (activeTeam && teamworkState?.status === 'running') {
+              const interruptedStatus = activeAbort?.signal.aborted ? 'cancelled' : 'failed';
+              teamworkState = { ...teamworkState, status: interruptedStatus, tasks: activeTeam.tasks.map(task => ({ ...task, phase: taskPhase(task), status: ['running', 'ready', 'pending'].includes(task.status) ? interruptedStatus : task.status })) };
+              broadcast({ type: 'teamwork_event', event: { type: 'task_snapshot', ...teamworkState } });
+              broadcast({ type: 'teamwork_event', event: { type: 'session_end', sessionId: teamworkState.sessionId, status: interruptedStatus, message: interruptedStatus === 'cancelled' ? 'Phiên đã dừng.' : 'Phiên dừng do lỗi; xem nhật ký để biết nguyên nhân.' } });
+            }
             busy = false; activeAbort = undefined; activeTeam = undefined;
             broadcast({ type: 'run_end' });
           }
