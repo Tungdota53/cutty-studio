@@ -26,7 +26,8 @@ export const roleCatalog: Record<Role, { label: string; responsibility: string; 
 export function roleProfile(role: Role, config?: Partial<Config>): RoleProfile {
   return profileSchema.parse({ instructions: '', autoSkills: true, model: '', skills: [`builtin:${roleCatalog[role].skill}`], ...config?.agentProfiles?.[role] });
 }
-export function canUseTool(role: Role, name: string) {
+export function canUseTool(role: Role, name: string, readOnlyTask = false) {
+  if (readOnlyTask && ['write_file', 'edit_file', 'run_command', 'run_tests'].includes(name)) return false;
   if (['write_file', 'edit_file'].includes(name)) return role === 'coder' || role === 'general';
   if (['run_command', 'run_tests'].includes(name)) return !roleCatalog[role].readOnly;
   return true;
@@ -50,5 +51,8 @@ export const defaultAgents: NamedAgent[] = [
   { id: 'test-writer', name: 'Test Writer', role: 'coder', skills: ['github:trailofbits/property-based-testing'], instructions: 'Write meaningful tests in explicitly assigned test files. Demonstrate failure before the fix where appropriate. Do not edit production files unless separately assigned.', model: '', enabled: true },
   { id: 'challenger', name: 'Challenger', role: 'tester', skills: ['github:superpowers/verification-before-completion'], instructions: 'Try to refute implementation claims with malformed inputs, boundary cases and concurrency checks. Execute checks independently. Do not change source files; report reproductions and missing prerequisites.', model: '', enabled: true },
   { id: 'auditor', name: 'Independent Auditor', role: 'tester', skills: ['github:superpowers/verification-before-completion'], instructions: 'Audit the final artifact independently. Run fresh build/tests in the actual implementation workspace. Treat handoff claims as unverified. Cite commands, exit codes, findings and validation gaps. Do not change source files.', model: '', enabled: true },
-  { id: 'acceptance', name: 'Acceptance Judge', role: 'judge', skills: ['github:superpowers/verification-before-completion'], instructions: 'Compare requirements with recorded evidence and reviewer findings. Never declare success solely from agent summaries. Report PASS, FAIL or UNVERIFIED with reasons.', model: '', enabled: true }
+  { id: 'acceptance', name: 'Acceptance Judge', role: 'judge', skills: ['github:superpowers/verification-before-completion'], instructions: 'Compare requirements with recorded evidence and reviewer findings. Never declare success solely from agent summaries. Report PASS, FAIL or UNVERIFIED with reasons.', model: '', enabled: true },
+  { id: 'spec-backend', name: 'Backend Spec Miner', role: 'planner', skills: [], instructions: 'Extract requirements, API contracts, failure cases and acceptance criteria from the request and actual code. Produce a specification for implementers without editing source.', model: '', enabled: true },
+  { id: 'spec-ui', name: 'UI Spec Miner', role: 'planner', skills: [], instructions: 'Extract UI requirements, interactions, accessibility constraints and acceptance criteria. Specify ownership and verification without editing source.', model: '', enabled: true },
+  { id: 'victory-auditor', name: 'Final Victory Auditor', role: 'tester', skills: ['github:superpowers/verification-before-completion'], instructions: 'Run a final fresh audit: trace original requirements, inspect real implementation and test binding, then independently execute required build/tests. Prior verdicts are withheld. Any integrity finding vetoes success. Never modify source or accept another agent summary as proof.', model: '', enabled: true }
 ];

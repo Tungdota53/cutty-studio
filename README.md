@@ -2,6 +2,18 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Quy trình Teamwork theo mẫu Anti — 0.6.0
+
+Đã đối chiếu 111 tài liệu của 25 agent trong mẫu dự án và tài liệu chính thức Antigravity; tổng hợp tại [Quy trình Teamwork](docs/anti-teamwork-protocol.md). App bổ sung **Backend Spec Miner, UI Spec Miner và Final Victory Auditor**, nâng roster mặc định lên **15 agent** với model riêng.
+
+- Task có phase, acceptance criteria, verification commands và ownership rõ. Worker có tập tệp rời nhau được chạy song song trong **một worktree của phiên**; tester/reviewer/auditor kiểm tra chính bản mã đó.
+- Gate cần tất cả reviewer liên quan và mọi challenger/auditor đã lập kế hoạch đạt. Kết quả thất bại có quyền veto; thiếu bằng chứng giữ UNVERIFIED. Auditor dùng context mới và không nhận verdict cũ.
+- Lỗi test/gate có thể tạo repair task trong phạm vi source đã giao, tối đa hai vòng. Các kiểm tra phụ thuộc chạy lại bằng agent/context mới; không tái sử dụng bằng chứng trước khi sửa.
+- Briefing/checkpoint, heartbeat, handoff năm phần, handoff JSON, bảng gate và ma trận tiêu chí được lưu trong `.vibe/sessions`. Hash theo tệp khai báo phát hiện nguồn thay đổi và bằng chứng mất hiệu lực.
+- Sửa ghi tệp vào các thư mục cha chưa tồn tại, đồng thời giữ kiểm tra traversal/symlink.
+
+Dự án đã lưu roster: **Thiết lập agent → Thêm team chuyên môn → chọn model → Lưu phân vai**. Tiêu chí bằng ngôn ngữ tự nhiên vẫn cần reviewer/judge đối chiếu; chưa có sandbox shell theo tệp, tự merge worktree hoặc tự tiếp tục scheduler sau khi tắt app.
+
 ## Team chuyên môn và thư viện skill — 0.5.0
 
 Teamwork áp dụng cách giao việc có briefing, phạm vi tệp, dependency, tiến độ và handoff riêng cho từng agent. Bộ mặc định có 12 agent trên 7 vai quyền công cụ: Frontend, Backend, Web Tester, Security Reviewer, Planner, Assistant, Explorer, UI/UX Designer, Test Writer, Challenger, Independent Auditor và Acceptance Judge. Mỗi agent chọn model riêng trong **Thiết lập agent**. Dự án đã lưu roster giữ cấu hình hiện tại; nút **Thêm team chuyên môn** bổ sung agent còn thiếu trước khi bạn lưu.
@@ -60,8 +72,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.5.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.5.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.6.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.6.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

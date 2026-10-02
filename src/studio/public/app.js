@@ -280,7 +280,7 @@ function showAgent(event) {
   const state = { ...liveAgents.get(event.agentId), ...event }; liveAgents.set(event.agentId, state);
   $('live-agents').replaceChildren();
   for (const [id, agent] of liveAgents) {
-    const row = document.createElement('p'); row.textContent = `${agent.agentName || id} · ${agent.role} · ${agent.status || agent.type}\n${agent.taskId || ''} ${agent.model || ''}\nSkill: ${(agent.skills || []).join(', ') || 'Đang chọn'}`;
+    const row = document.createElement('p'); row.textContent = `${agent.agentName || id} · ${agent.role} · ${agent.status || agent.type}\n${agent.taskId || ''} ${agent.model || ''} · ${agent.phase || ''}\nSkill: ${(agent.skills || []).join(', ') || 'Đang chọn'}`;
     $('live-agents').append(row);
   }
 }

@@ -1,10 +1,33 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { safePath } from './security.js';
 import type { Message, Task } from './types.js';
+import { taskPhase } from './team-protocol.js';
 
-export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number }
+export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number; commands?: Record<string, string>; checks?: { command: string; exitCode: number; excerpt: string }[]; files?: Record<string, string | null>; stale?: boolean }
+export function dependencyFingerprints(task: Task, tasks: Task[], scope: string) {
+  const seen = new Set<string>(), files: Record<string, string | null> = {};
+  const visit = (task: Task) => {
+    if (seen.has(task.id)) return; seen.add(task.id);
+    if (task.role === 'coder') for (const file of task.expectedFiles || []) {
+      const key = path.resolve(scope, file);
+      try { files[key] = crypto.createHash('sha256').update(fs.readFileSync(safePath(scope, file))).digest('hex'); } catch { files[key] = null; }
+    }
+    for (const id of task.dependencies) { const parent = tasks.find(candidate => candidate.id === id); if (parent) visit(parent); }
+  };
+  visit(task); return files;
+}
+export function staleEvidence(proof: TaskEvidence) {
+  return Object.entries(proof.files || {}).some(([file, expected]) => {
+    try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== expected; } catch { return expected !== null; }
+  });
+}
 export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map<string, string>) {
-  for (const call of item.tool_calls || []) calls.set(call.id, call.function.name);
+  for (const call of item.tool_calls || []) {
+    calls.set(call.id, call.function.name);
+    try { (evidence.commands ||= {})[call.id] = JSON.parse(call.function.arguments).command || ''; } catch { /* Invalid arguments cannot execute. */ }
+  }
   if (item.role !== 'tool') return;
   let result: { ok?: boolean; output?: string };
   try { result = JSON.parse(item.content || '{}'); } catch { evidence.toolErrors++; return; }
@@ -14,6 +37,7 @@ export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map
   if (!['run_tests', 'run_command'].includes(tool || '')) return;
   const exit = result.output?.match(/(?:^|\n)exit=(\d+)(?:\n|$)/);
   if (!exit) return;
+  (evidence.checks ||= []).push({ command: result.output?.match(/^command=([^\n]+)/)?.[1] || evidence.commands?.[item.tool_call_id || ''] || '', exitCode: Number(exit[1]), excerpt: (result.output || '').slice(0, 3000) });
   if (exit[1] === '0') evidence.successfulChecks++; else evidence.failedChecks++;
 }
 
@@ -28,7 +52,7 @@ export function reviewVerdict(task: Task): 'PASS' | 'FAIL' | 'UNVERIFIED' {
 
 export function qualityGate(tasks: Task[], evidence: Map<string, TaskEvidence>) {
   const implementation = tasks.filter(task => task.role === 'coder');
-  if (!implementation.length) return { verdict: tasks.every(t => t.status === 'completed') ? 'PASS' : 'FAIL', reasons: ['Không có thay đổi mã nguồn trong kế hoạch.'] };
+  if (!implementation.length && !tasks.some(task => ['tester', 'reviewer', 'judge'].includes(task.role))) return { verdict: tasks.every(t => t.status === 'completed') ? 'PASS' : 'FAIL', reasons: ['Không có thay đổi mã nguồn trong kế hoạch.'] };
   const reasons: string[] = [];
   const dependsOn = (task: Task, id: string, visited = new Set<string>()): boolean => {
     if (visited.has(task.id)) return false; visited.add(task.id);
@@ -39,11 +63,38 @@ export function qualityGate(tasks: Task[], evidence: Map<string, TaskEvidence>) 
   for (const coder of implementation) {
     const testers = tasks.filter(t => t.role === 'tester' && dependsOn(t, coder.id));
     const reviews = tasks.filter(t => t.role === 'reviewer' && dependsOn(t, coder.id));
-    if (!testers.some(t => t.status === 'completed' && (evidence.get(t.id)?.successfulChecks || 0) > 0)) reasons.push(`${coder.id}: chưa có kiểm tra thực thi thành công từ tester phụ thuộc.`);
-    if (!reviews.some(t => t.status === 'completed' && evidence.get(t.id)?.inspected && reviewVerdict(t) === 'PASS')) reasons.push(`${coder.id}: chưa có review độc lập đọc mã và trả PASS không có finding.`);
+    if (!testers.some(t => t.status === 'completed' && !evidence.get(t.id)?.stale && (evidence.get(t.id)?.successfulChecks || 0) > 0)) reasons.push(`${coder.id}: chưa có kiểm tra thực thi thành công từ tester phụ thuộc.`);
+    if (!reviews.length || !reviews.every(t => t.status === 'completed' && !evidence.get(t.id)?.stale && evidence.get(t.id)?.inspected && reviewVerdict(t) === 'PASS')) reasons.push(`${coder.id}: cần tất cả reviewer phụ thuộc đọc mã và trả PASS không có finding.`);
   }
-  const failed = tasks.some(t => t.status !== 'completed' || (evidence.get(t.id)?.failedChecks || 0) > 0 || (t.role === 'reviewer' && reviewVerdict(t) === 'FAIL'));
+  for (const task of tasks.filter(t => ['challenge', 'audit', 'acceptance'].includes(taskPhase(t)))) {
+    const proof = evidence.get(task.id);
+    if (proof?.stale || reviewVerdict(task) !== 'PASS' || !proof?.inspected || (task.role !== 'judge' && !proof.successfulChecks)) reasons.push(`${task.id}: chưa có kết luận PASS độc lập và bằng chứng cho phase ${taskPhase(task)}.`);
+    if (['audit', 'acceptance'].includes(taskPhase(task)) && implementation.some(coder => !dependsOn(task, coder.id))) reasons.push(`${task.id}: audit/nghiệm thu chưa phụ thuộc vào toàn bộ phần triển khai.`);
+    if (taskPhase(task) === 'acceptance' && tasks.some(audit => taskPhase(audit) === 'audit' && !dependsOn(task, audit.id))) reasons.push(`${task.id}: nghiệm thu chưa phụ thuộc vào toàn bộ audit.`);
+  }
+  for (const task of tasks) {
+    if (evidence.get(task.id)?.stale) reasons.push(`${task.id}: bằng chứng mất hiệu lực vì mã nguồn đã thay đổi sau kiểm tra.`);
+    if (taskPhase(task) === 'verification' && !evidence.get(task.id)?.successfulChecks) reasons.push(`${task.id}: thiếu kiểm tra được thực thi thành công.`);
+    if (task.role === 'reviewer' && (!evidence.get(task.id)?.inspected || reviewVerdict(task) !== 'PASS')) reasons.push(`${task.id}: thiếu review PASS với inspection độc lập.`);
+    for (const command of task.verificationCommands || []) {
+      if (!evidence.get(task.id)?.checks?.some(check => check.exitCode === 0 && check.command.trim() === command.trim())) reasons.push(`${task.id}: chưa chạy thành công lệnh yêu cầu ${command}`);
+    }
+  }
+  const failed = tasks.some(t => t.status !== 'completed' || (evidence.get(t.id)?.failedChecks || 0) > 0 || (['review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && reviewVerdict(t) === 'FAIL'));
   return { verdict: failed ? 'FAIL' : reasons.length ? 'UNVERIFIED' : 'PASS', reasons };
+}
+
+export function structuredHandoff(task: Task, proof?: TaskEvidence) {
+  let report: Record<string, unknown> = {};
+  try { report = JSON.parse((task.resultSummary || '').replace(/^```(?:json)?\s*|\s*```$/g, '')); } catch { /* Preserve original report separately. */ }
+  return {
+    taskId: task.id, phase: taskPhase(task), status: task.status, attempt: task.retries || 0, workspace: task.worktreePath || null,
+    observation: report.observation || task.resultSummary || task.error || 'No observation',
+    logicChain: report.logicChain || 'See original agent report; no structured decision rationale provided.',
+    caveats: report.caveats || ['Agent statements require independent verification.'], conclusion: report.conclusion || task.status,
+    verificationMethod: proof?.checks || [], invalidationConditions: report.invalidationConditions || ['Any change to assigned or dependency files after this attempt invalidates its verification.'],
+    acceptanceCriteria: task.acceptanceCriteria || [], verdict: reviewVerdict(task), findings: report.findings || [], toolEvidence: proof || null
+  };
 }
 
 export function writeAgentArtifact(root: string, aid: string, file: string, content: string) {

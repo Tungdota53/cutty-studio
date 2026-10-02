@@ -2,9 +2,9 @@ import type { Task, Message } from './types.js';
 import { estimateTokens } from './conversation.js';
 
 /** Completed dependency reports become input context for the next task. */
-export function taskHandoff(goal: string, task: Task, tasks: Task[], tokenBudget = 6000): Message[] {
+export function taskHandoff(goal: string, task: Task, tasks: Task[], tokenBudget = 6000, freshAudit = false): Message[] {
   const completed = tasks.filter(item => task.dependencies.includes(item.id) && item.status === 'completed');
-  const reports = completed.map(item => ({ id: item.id, role: item.role, title: item.title, worktree: item.worktreePath || null, result: item.resultSummary || '', expectedFiles: item.expectedFiles || [] }));
+  const reports = completed.map(item => ({ id: item.id, role: item.role, title: item.title, worktree: item.worktreePath || null, result: freshAudit ? '[Fresh audit: prior verdict withheld; inspect the real artifact independently.]' : item.resultSummary || '', expectedFiles: item.expectedFiles || [] }));
   const perReport = Math.max(100, Math.floor((tokenBudget * 3) / Math.max(1, reports.length)) - 400);
   for (const report of reports) {
     const bytes = Buffer.from(report.result, 'utf8');

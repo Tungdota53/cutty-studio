@@ -21,7 +21,7 @@ const model = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const request = requests.at(-1), user = request.messages.findLast(message => message.role === 'user')?.content || '';
     if (user.includes('smoke-teamwork-page') && request.messages[0].content.includes('You are Vibe planner')) {
-      const content = JSON.stringify({ tasks: [{ id: 'T1', title: 'Create smoke page', role: 'coder', description: 'smoke-create-page', dependencies: [] }, { id: 'T2', title: 'Test smoke page', role: 'tester', description: 'smoke-check-page', dependencies: ['T1'] }, { id: 'T3', title: 'Review smoke page', role: 'reviewer', description: 'smoke-review-page', dependencies: ['T2'] }] });
+      const content = JSON.stringify({ tasks: [{ id: 'T1', title: 'Create smoke page', role: 'coder', description: 'smoke-create-page', expectedFiles: ['smoke-teamwork.html'], dependencies: [] }, { id: 'T2', title: 'Test smoke page', role: 'tester', description: 'smoke-check-page', dependencies: ['T1'] }, { id: 'T3', title: 'Review smoke page', role: 'reviewer', description: 'smoke-review-page', dependencies: ['T2'] }, { id: 'T4', title: 'Fresh audit', role: 'tester', agentId: 'victory-auditor', phase: 'audit', description: 'smoke-audit-page', dependencies: ['T3'] }] });
       res.end('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n'); return;
     }
     if (user.startsWith('smoke-') && user.endsWith('-page')) {
@@ -31,11 +31,11 @@ const model = http.createServer((req, res) => {
         const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: 'smoke-teamwork.html', content: '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
-      if (user === 'smoke-check-page' && tools.length === 1) {
+      if (['smoke-check-page', 'smoke-audit-page'].includes(user) && tools.length === 1) {
         const call = { index: 0, id: 'smoke-executed-check', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: `node -e "process.exit(require('fs').readFileSync('smoke-teamwork.html','utf8').includes('alo alo')?0:1)"` }) } };
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
-      if (user === 'smoke-review-page') {
+      if (['smoke-review-page', 'smoke-audit-page'].includes(user)) {
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ verdict: 'PASS', findings: [], evidence: ['read_file smoke-teamwork.html'] }) } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
       assert(tools.every(tool => JSON.parse(tool.content).ok));
@@ -64,7 +64,7 @@ app.on('browser-window-created', (_, win) => {
       const port = model.address().port;
       await win.webContents.executeJavaScript(`document.getElementById('team-button').click();`);
       await wait(win, `document.querySelectorAll('.role-card').length===7`);
-      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.named-agent-card').length`), 12);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.named-agent-card').length`), 15);
       assert(await win.webContents.executeJavaScript(`!!document.querySelector('[data-agent=ui-ux] [data-field=model]') && !!document.querySelector('[data-agent=challenger]') && !!document.querySelector('[data-agent=auditor]')`));
       await win.webContents.executeJavaScript(`document.querySelector('[data-role=reviewer] [data-field=instructions]').value='Review authentication with evidence';document.getElementById('team-form').requestSubmit();`);
       await wait(win, `document.getElementById('team-status').textContent.includes('Đã lưu')`);
@@ -111,7 +111,7 @@ app.on('browser-window-created', (_, win) => {
       assert(report.includes('Nghiệm thu: PASS'));
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'twelve specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.quit(); }
   });

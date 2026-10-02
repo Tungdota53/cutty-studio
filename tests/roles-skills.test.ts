@@ -27,7 +27,7 @@ describe('Role permissions and skill loading', () => {
       expect(skill.provenance?.integrity).toBe(true);
       expect(['Apache-2.0', 'MIT', 'CC-BY-SA-4.0']).toContain(skill.provenance?.license);
       expect(skill.provenance?.commit).toMatch(/^[a-f0-9]{40}$/);
-      expect(lib.load(skill.id).instructions.length).toBeGreaterThan(100);
+      expect(lib.load(skill.id, external).instructions.length).toBeGreaterThan(100);
     }
     expect(lib.resource('github:openai/security-best-practices', 'references/javascript-general-web-frontend-security.md', 1, 10)).toContain('Đọc tiếp từ dòng 11');
   });
@@ -49,6 +49,9 @@ describe('Role permissions and skill loading', () => {
     expect((await tools.run('write_file', JSON.stringify({ path: 'allowed.txt', content: 'ok' }))).ok).toBe(true);
     expect((await tools.run('write_file', JSON.stringify({ path: 'other.txt', content: 'bad' }))).ok).toBe(false);
     expect(fs.existsSync(path.join(dir, 'other.txt'))).toBe(false);
+    const nested = new Tools(dir, async () => true, 'coder', new SkillLibrary(dir), ['src/components/card.ts']);
+    expect((await nested.run('write_file', JSON.stringify({ path: 'src/components/card.ts', content: 'export const card = true;' }))).ok).toBe(true);
+    expect(fs.readFileSync(path.join(dir, 'src/components/card.ts'), 'utf8')).toContain('card = true');
   });
   it('executes and cancels commands with an active agent signal', async () => {
     const tools = new Tools(root(), async () => true, 'tester');
@@ -56,6 +59,15 @@ describe('Role permissions and skill loading', () => {
     expect(await tools.run('run_command', JSON.stringify({ command: 'node --version' }), active.signal)).toMatchObject({ ok: true, output: expect.stringContaining('exit=0') });
     active.abort();
     expect((await tools.run('run_command', JSON.stringify({ command: 'node --version' }), active.signal)).ok).toBe(false);
+  });
+  it('keeps teamwork question tasks read-only while direct assistant tools retain their permissions', async () => {
+    const dir = root(), lib = new SkillLibrary(dir);
+    const readonly = new Tools(dir, async () => true, 'general', lib, undefined, true);
+    const normal = new Tools(dir, async () => true, 'general', lib);
+    const write = JSON.stringify({ path: 'source.txt', content: 'real' });
+    expect((await readonly.run('write_file', write)).ok).toBe(false);
+    expect((await readonly.run('run_command', '{"command":"echo unsafe"}')).ok).toBe(false);
+    expect((await normal.run('write_file', write)).ok).toBe(true);
   });
   it('rejects a tampered GitHub skill instead of loading its instructions', () => {
     const dir = root(), builtins = path.join(dir, 'skills'); fs.mkdirSync(builtins);

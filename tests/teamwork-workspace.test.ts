@@ -85,4 +85,56 @@ describe('Teamwork workspace mode', () => {
     const dir = root(); const { team, store } = runner(dir, [{ id: 'T1', title: 'Fail', role: 'coder', dependencies: [] }, { id: 'T2', title: 'Dependent', role: 'tester', dependencies: ['T1'] }], async () => { throw new Error('API unavailable'); });
     const result = await team.run('Code'); expect(store.tasks(result.id).find(task => task.id === 'T2')).toMatchObject({ status: 'blocked', error: expect.stringContaining('T1') });
   });
+  it('shares one implementation worktree across parallel workers and downstream verification', async () => {
+    const dir = root(); await repository(dir);
+    const seen: string[] = [];
+    const tasks = ['a', 'b'].map(id => ({ id, role: 'coder', title: id, description: id, dependencies: [], expectedFiles: [id + '.txt'] }));
+    const { team } = runner(dir, [...tasks, { id: 'test', role: 'tester', title: 'Check', description: 'test', dependencies: ['a', 'b'] }], async messages => {
+      const request = messages.findLast(message => message.role === 'user')?.content;
+      const scope = messages.find(message => message.role === 'user' && message.content?.includes('Assigned write files:'))!.content!.match(/^Workspace: ([^\n]+)/m)![1]; seen.push(scope);
+      if (request === 'test') { expect(fs.readFileSync(path.join(scope, 'a.txt'), 'utf8')).toBe('a'); expect(fs.readFileSync(path.join(scope, 'b.txt'), 'utf8')).toBe('b'); }
+      else if (!messages.some(message => message.role === 'tool')) return { content: '', toolCalls: [{ id: 'write', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: request + '.txt', content: request }) } }] };
+      return { content: 'done', toolCalls: [] };
+    });
+    const result = await team.run('Two features'); expect(result.status).toBe('completed'); expect(new Set(seen).size).toBe(1);
+    expect(fs.existsSync(path.join(dir, 'a.txt'))).toBe(false);
+  });
+  it('repairs a real failed check with fresh agents and reruns verification', async () => {
+    const dir = root();
+    const command = `node -e "process.exit(require('fs').readFileSync('answer.txt','utf8')==='good'?0:1)"`;
+    const plan = [{ id: 'code', role: 'coder', title: 'Code', description: 'initial-code', expectedFiles: ['answer.txt'] }, { id: 'test', role: 'tester', title: 'Test', description: 'verify-value', dependencies: ['code'], verificationCommands: [command] }, { id: 'review', role: 'reviewer', title: 'Review', description: 'review-value', dependencies: ['test'] }];
+    const { team, store } = runner(dir, plan, async messages => {
+      const request = messages.findLast(message => message.role === 'user')?.content || '', tools = messages.filter(message => message.role === 'tool');
+      if (!tools.length) {
+        const coder = request === 'initial-code' || request.startsWith('[REPAIR]');
+        const name = coder ? 'write_file' : request === 'verify-value' ? 'run_command' : 'read_file';
+        const args = coder ? { path: 'answer.txt', content: request === 'initial-code' ? 'bad' : 'good' } : name === 'run_command' ? { command } : { path: 'answer.txt' };
+        return { content: '', toolCalls: [{ id: 'call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
+      }
+      return { content: request === 'review-value' ? '{"verdict":"PASS","findings":[]}' : 'done', toolCalls: [] };
+    });
+    const result = await team.run('Fix value');
+    expect(result.gate.verdict).toBe('PASS'); expect(fs.readFileSync(path.join(dir, 'answer.txt'), 'utf8')).toBe('good');
+    expect(result.tasks.find(task => task.id === 'test')?.assignedAgentId).toContain('-r1');
+    expect(store.tasks(result.id).find(task => task.id === 'repair-1')?.status).toBe('completed');
+    const attempts = fs.readdirSync(path.join(dir, '.vibe', 'sessions', result.id, 'agents'));
+    expect(attempts).toContain('agent-tester-02'); expect(attempts).toContain('agent-tester-02-r1');
+  });
+  it('vetoes a validator that changes assigned source while claiming success', async () => {
+    const dir = root();
+    const plan = [{ id: 'code', role: 'coder', title: 'Code', description: 'make-source', expectedFiles: ['source.txt'] }, { id: 'test', role: 'tester', title: 'Verify', description: 'tamper-source', dependencies: ['code'] }];
+    const { team } = runner(dir, plan, async messages => {
+      const request = messages.findLast(message => message.role === 'user')?.content;
+      if (!messages.some(message => message.role === 'tool')) {
+        const name = request === 'make-source' ? 'write_file' : 'run_command';
+        const args = name === 'write_file' ? { path: 'source.txt', content: 'real' } : { command: `node -e "require('fs').writeFileSync('source.txt','tampered')"` };
+        return { content: '', toolCalls: [{ id: 'tool', type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
+      }
+      return { content: '{"verdict":"PASS","findings":[]}', toolCalls: [] };
+    });
+    const result = await team.run('Verify source');
+    expect(result.gate.verdict).toBe('FAIL');
+    expect(result.tasks.find(task => task.id === 'test')?.error).toContain('Integrity veto');
+    expect(result.tasks.some(task => task.id.startsWith('repair-'))).toBe(false);
+  });
 });

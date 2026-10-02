@@ -139,7 +139,12 @@ export function renderTable(
     return '';
   }
 
-  if (options?.plain) {
+  // Simple non-TTY tables do not need cli-table3's styled cell layout engine.
+  // Keep its full renderer for wide Unicode, multiline cells or custom sizing/alignment.
+  const simpleAscii = options?.isTTY === false && Object.keys(options).every(key => ['isTTY', 'plain'].includes(key))
+    && head.every(cell => /^[\x20-\x7e]*$/.test(cell))
+    && rows.every(row => row.every(cell => /^[\x20-\x7e]*$/.test(String(cell ?? ''))));
+  if (options?.plain || simpleAscii) {
     return renderPlainTextTable(head, rows);
   }
 

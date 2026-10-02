@@ -16,6 +16,7 @@ export interface AgentMemoryOptions {
   skills?: string[];
   skillWorkspace?: string;
   skillTask?: string;
+  readOnlyTask?: boolean;
   onSkills?: (skills: Skill[]) => void;
   onContext?: (event: ContextEvent) => void;
   checkpoint?: (state: ConversationState) => void;
@@ -36,10 +37,10 @@ export class Agent {
     const skills = library.select(this.role, memoryOptions.skillTask ?? task, config, [...(memoryOptions.skills || []), ...(assigned?.skills || [])]);
     memoryOptions.onSkills?.(skills);
     this.log?.emit('skills_loaded', { agentId: this.id, role: this.role, skills: skills.map(skill => skill.id) });
-    const baseSystem = systemPrompt(this.role, this.root) + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + (assigned ? `\nAssigned agent: ${assigned.name} (${assigned.id})\n${assigned.instructions}\n` : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
+    const baseSystem = systemPrompt(this.role, this.root) + (memoryOptions.readOnlyTask ? '\nThis task is read-only. Answer questions; source changes must be assigned to coder tasks. No shell execution or writes.\n' : '') + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + (assigned ? `\nAssigned agent: ${assigned.name} (${assigned.id})\n${assigned.instructions}\n` : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
     const skillSystem = () => baseSystem + skills.map(skill => `Skill ${skill.id}:\nSkill file: ${skill.file}\nRequired tools/resources: ${(skill.requires || []).join(', ') || 'See instructions'}. Verify availability before use; report a missing prerequisite as a limitation. Resolve upstream .claude paths or CLAUDE_PLUGIN_ROOT references against this skill file's directory. Read references using read_skill_resource.\n${skill.instructions}`).join('\n\n');
     let system = skillSystem();
-    const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name));
+    const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name, memoryOptions.readOnlyTask));
     const user: Message = { role: 'user', content: task };
     state.messages.push(user); memoryOptions.onItem?.(user);
     for (let iteration = 0, toolCount = 0; iteration < 20; iteration++) {
@@ -87,7 +88,7 @@ export class Agent {
             }
             value = { ok: true, id: skill.id, instructions: skill.instructions };
           } catch (error) { value = { ok: false, error: String(error) }; }
-        } else value = canUseTool(this.role, call.function.name) ? await this.tools.run(call.function.name, call.function.arguments, signal) : { ok: false, error: `Role ${this.role} không được dùng ${call.function.name}` };
+        } else value = canUseTool(this.role, call.function.name, memoryOptions.readOnlyTask) ? await this.tools.run(call.function.name, call.function.arguments, signal) : { ok: false, error: `Role ${this.role} không được dùng ${call.function.name}` };
         const item: Message = { role: 'tool', tool_call_id: call.id, content: JSON.stringify(value) };
         memoryOptions.onItem?.(item);
         exchange.push({ ...item, content: context.toolContent(item.content!) });
