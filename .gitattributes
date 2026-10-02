@@ -1,0 +1,2 @@
+# Preserve upstream bytes so SHA-256 provenance remains valid on Windows.
+src/vendor-skills/** -text
