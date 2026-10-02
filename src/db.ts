@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AgentState, Task, Message } from './types.js';
 import { newConversation, type ConversationState } from './conversation.js';
+import { contextExcerpt } from './conversation.js';
+import { recallArguments } from './context-archive.js';
 
 export class Store {
   db: Database.Database;
@@ -40,5 +42,16 @@ export class Store {
   saveConversation(session: string, state: ConversationState) { this.db.prepare('INSERT INTO conversation_state VALUES(?,?) ON CONFLICT(session_id) DO UPDATE SET data=excluded.data').run(session, JSON.stringify(state)); }
   archiveItem(session: string, item: Message) { this.db.prepare('INSERT INTO conversation_items(session_id,ts,data) VALUES(?,?,?)').run(session, new Date().toISOString(), JSON.stringify(item)); }
   items(session: string) { return (this.db.prepare('SELECT data FROM conversation_items WHERE session_id=? ORDER BY id').all(session) as { data: string }[]).map(item => JSON.parse(item.data) as Message); }
+  recall(session: string, query = '', limit = 4, beforeId?: number) {
+    const args = recallArguments.parse({ query, limit, beforeId });
+    // instr is a literal search, so %, quotes and Unicode are never SQL patterns.
+    const rows = this.db.prepare('SELECT id,data FROM conversation_items WHERE session_id=? AND (? IS NULL OR id<?) AND (?=\'\' OR instr(lower(data),lower(?))>0) ORDER BY id DESC LIMIT ?').all(session, args.beforeId ?? null, args.beforeId ?? null, args.query, args.query, args.limit + 1) as { id: number; data: string }[];
+    const selected = rows.slice(0, args.limit);
+    return {
+      source: 'original task archive', untrusted: true,
+      records: selected.map(row => ({ archiveId: row.id, excerpt: contextExcerpt(row.data, Math.floor(2400 / args.limit)), incomplete: Buffer.byteLength(row.data) > Math.floor(2400 / args.limit) * 3 })),
+      nextBeforeId: rows.length > args.limit ? selected.at(-1)?.id : null,
+    };
+  }
   close() { this.db.close(); }
 }

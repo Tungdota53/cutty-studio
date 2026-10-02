@@ -547,6 +547,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               }
             }, [], {
               state: memory,
+              recall: (query, limit, beforeId) => db.recall(sessionId, query, limit, beforeId),
               namedAgentId: selected?.id,
               onContext: event => broadcast({ ...event, sessionId }),
               checkpoint: state => db.saveConversation(sessionId, state),

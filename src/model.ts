@@ -1,7 +1,10 @@
 import type { Config } from './config.js';
 import type { Message, TokenUsage, ToolCall } from './types.js';
 export interface ChatResult { content: string; toolCalls: ToolCall[]; usage?: TokenUsage; model: string }
-export interface ChatOptions { maxOutputTokens?: number }
+export interface ChatOptions { maxOutputTokens?: number; timeoutMs?: number; retryAttempts?: number }
+export class ModelResponseError extends Error {
+  constructor(message: string, public readonly partialOutput: boolean, options?: ErrorOptions) { super(message, options); this.name = 'ModelResponseError'; }
+}
 
 export class ModelClient {
   private usageSupported = true;
@@ -16,26 +19,29 @@ export class ModelClient {
   async chat(messages: Message[], tools: unknown[], model = this.c.model, signal?: AbortSignal, onToken?: (s: string) => void, options: ChatOptions = {}): Promise<ChatResult> {
     let last: unknown;
     let requestUsage = this.usageSupported;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    const timeoutMs = Math.max(1000, Math.min(180000, Math.floor(options.timeoutMs || 180000)));
+    const attempts = Math.max(1, Math.min(4, Math.floor(options.retryAttempts || 4)));
+    for (let attempt = 0; attempt < attempts; attempt++) {
       signal?.throwIfAborted();
       let emitted = false;
       try {
         const response = await fetch(`${this.c.baseUrl}/chat/completions`, {
           method: 'POST', headers: { Authorization: `Bearer ${this.c.apiKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model, messages, ...(tools.length ? { tools, tool_choice: 'auto' } : {}), stream: true, ...(requestUsage ? { stream_options: { include_usage: true } } : {}), ...(options.maxOutputTokens ? { max_tokens: options.maxOutputTokens } : {}) }),
-          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(180000)]) : AbortSignal.timeout(180000)
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs)
         });
         if (response.status === 401 || response.status === 403) throw new Error(`Xác thực API thất bại (HTTP ${response.status}); kiểm tra khóa API`);
         if (!response.ok) {
           const detail = (await response.text()).slice(0, 500);
           // Some compatible routers do not implement streaming usage yet.
           if (response.status === 400 && requestUsage && /stream_options|include_usage/i.test(detail)) { requestUsage = false; this.usageSupported = false; continue; }
-          if (response.status === 429 || response.status >= 500) { last = new Error(`HTTP ${response.status}: ${detail}`); await this.backoff(attempt, signal); continue; }
+          if (response.status === 429 || response.status >= 500) { last = new Error(`HTTP ${response.status}: ${detail}`); if (attempt < attempts - 1) await this.backoff(attempt, signal); continue; }
           throw new Error(`API HTTP ${response.status}: ${detail}`);
         }
         if (!response.body) throw new Error('Response không có stream');
         const reader = response.body.getReader(), decoder = new TextDecoder();
         let buffer = '', content = '';
+        let finishReason: string | null = null;
         let usage: TokenUsage | undefined;
         const calls = new Map<number, ToolCall>();
         function consume(line: string) {
@@ -47,6 +53,7 @@ export class ModelClient {
             usage = { prompt: json.usage.prompt_tokens, completion: json.usage.completion_tokens, total: json.usage.total_tokens ?? json.usage.prompt_tokens + json.usage.completion_tokens, cached: json.usage.prompt_tokens_details?.cached_tokens || 0, estimated: false };
           }
           const delta = json.choices?.[0]?.delta;
+          if (typeof json.choices?.[0]?.finish_reason === 'string') finishReason = json.choices[0].finish_reason;
           if (delta?.content) { emitted = true; content += delta.content; onToken?.(delta.content); }
           for (const call of delta?.tool_calls || []) {
             emitted = true;
@@ -64,12 +71,24 @@ export class ModelClient {
           }
           buffer += decoder.decode(); if (buffer.trim()) consume(buffer);
         } finally { reader.releaseLock(); }
-        return { content, toolCalls: [...calls.values()], usage, model };
+        if (finishReason === 'length' || finishReason === 'content_filter') throw new Error(`API stream: phản hồi chưa hoàn tất (${finishReason}); không thực thi tool hoặc coi đây là kết quả hoàn thành.`);
+        const toolCalls = [...calls.values()];
+        const ids = new Set<string>();
+        for (const call of toolCalls) {
+          if (!call.id || ids.has(call.id) || !call.function.name) throw new Error('API stream: tool-call thiếu hoặc trùng ID/tên; không thực thi lượt công cụ này.');
+          ids.add(call.id);
+          let args: unknown;
+          try { args = JSON.parse(call.function.arguments); } catch { throw new Error('API stream: JSON tham số công cụ bị cắt hoặc không hợp lệ; không thực thi lượt công cụ này.'); }
+          if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('API stream: tham số công cụ phải là JSON object.');
+        }
+        if (!content.trim() && !toolCalls.length) throw new Error('Model trả phản hồi rỗng; tác vụ chưa hoàn thành.');
+        return { content, toolCalls, usage, model };
       } catch (error) {
         last = error; signal?.throwIfAborted();
         // Replaying after visible output could duplicate text or tool actions.
-        if (emitted || /Xác thực|API HTTP|API stream/i.test(String(error))) throw error;
-        if (attempt < 3) await this.backoff(attempt, signal);
+        if (emitted) throw new ModelResponseError(error instanceof Error ? error.message : String(error), true, { cause: error });
+        if (/Xác thực|API HTTP|API stream/i.test(String(error))) throw error;
+        if (attempt < attempts - 1) await this.backoff(attempt, signal);
       }
     }
     throw last || new Error('API không chấp nhận cấu hình streaming.');

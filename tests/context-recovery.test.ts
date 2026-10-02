@@ -18,6 +18,66 @@ const exchange: Message[] = [
   { role: 'tool', tool_call_id: 'large-write', content: '{"ok":true,"output":"written"}' }
 ];
 describe('Context failure regressions', () => {
+  it('preserves an intermediate short correction through repeated lossy summaries', async () => {
+    const c = setup();
+    const correction: Message = { role: 'user', content: 'Correction: only one model; never change the authentication flow.' };
+    const state = newConversation([
+      { role: 'user', content: 'Build the app' },
+      { role: 'assistant', content: 'Earlier discussion '.repeat(3000) },
+      correction,
+      { role: 'assistant', content: 'Implementation details '.repeat(3000) },
+      { role: 'user', content: 'Continue with the UI' }
+    ]);
+    const chat = vi.fn(async () => ({ content: 'Work continues.', toolCalls: [], model: c.model }));
+    const context = new ConversationContext(c, state);
+    await context.prepare('System', [], { chat } as unknown as ModelClient, c.model);
+    state.messages.push(...exchange, { role: 'user', content: 'Continue again' });
+    await context.prepare('System', [], { chat } as unknown as ModelClient, c.model);
+    expect(state.compactions).toBe(2);
+    expect(state.messages).toContainEqual(correction);
+    expect(context.stats('System').estimatedInput).toBeLessThanOrEqual(context.limits.inputBudget);
+  });
+  it('reports protected short-user overflow without deleting corrections', async () => {
+    const c = setup();
+    const state = newConversation(Array.from({ length: 100 }, (_, i) => ({ role: 'user' as const, content: `Correction ${i}: ` + 'Keep existing constraints. '.repeat(20) })));
+    const before = structuredClone(state);
+    const chat = vi.fn();
+    await expect(new ConversationContext(c, state).prepare('System', [], { chat } as unknown as ModelClient, c.model)).rejects.toThrow('vượt ngân sách');
+    expect(state).toEqual(before);
+    expect(chat).not.toHaveBeenCalled();
+  });
+  it('prioritizes historical long user excerpts ahead of bulky tool records', async () => {
+    const c = setup();
+    const state = newConversation([
+      { role: 'user', content: 'Build the app' },
+      ...Array.from({ length: 12 }, () => ({ role: 'assistant' as const, content: 'Generated implementation details '.repeat(500) })),
+      { role: 'user', content: 'Historical correction: preserve the deployment target. ' + 'Previous detailed discussion '.repeat(300) },
+      { role: 'assistant', content: 'Further discussion '.repeat(500) },
+      { role: 'user', content: 'Continue' }
+    ]);
+    const chat = vi.fn(async (messages: Message[]) => {
+      expect(messages[1].content).toContain('Historical correction: preserve the deployment target.');
+      expect(messages[1].content).toContain('Historical user turns (may be excerpted)');
+      expect(messages[1].content).toContain('Excerpt: omitted content');
+      return { content: 'Bounded handoff.', toolCalls: [], model: c.model };
+    });
+    await new ConversationContext(c, state).prepare('System', [], { chat } as unknown as ModelClient, c.model);
+    expect(chat).toHaveBeenCalledTimes(1);
+  });
+  it.each(['duplicate', 'empty'])('drops a malformed %s tool-call ID batch atomically', mode => {
+    const call = exchange[0].tool_calls![0];
+    const calls = mode === 'duplicate' ? [call, { ...call }] : [{ ...call, id: '' }];
+    const messages: Message[] = [
+      { role: 'user', content: 'Keep this request' },
+      { role: 'assistant', content: '', tool_calls: calls },
+      { role: 'tool', tool_call_id: calls[0].id, content: 'Completed result' },
+      { role: 'assistant', content: 'Valid subsequent response' }
+    ];
+    expect(messageGroups(messages)).toEqual([[0], [3]]);
+    const state = newConversation(messages);
+    new ConversationContext(setup(), state);
+    expect(state.messages).toEqual([messages[0], messages[3]]);
+  });
   it.each(['empty', 'tools', 'oversized', 'outage'])('compacts huge recent writes safely with a %s summarizer reply', async mode => {
     const c = setup();
     const requestSizes: number[] = [];

@@ -1,5 +1,16 @@
 # Context recovery — 0.10.1
 
+## Hardening in 0.10.2
+
+- Preserve short historical user turns (up to 512 estimated serialized tokens each) verbatim through repeated compaction. Longer historical user excerpts precede bulky tool records; their omissions remain explicit. Protected turns that alone exceed the budget are rejected without deleting them.
+- `recall_context` retrieves original archived records only from the current chat/task. It supports literal search, stable archive IDs, older-page cursors and bounded Unicode excerpts. Task archives never become authoritative instructions or a substitute for independent checks. Old pre-archive history may not be retrievable.
+- Compaction has a 30-second request timeout and one provider attempt before local recovery. Normal requests keep their existing retry policy.
+- Empty provider streams cannot complete a task. Length/content-filter termination, malformed tool arguments and duplicate tool IDs reject the batch before execution. A stream error after text or tool deltas prevents both replay and fallback to another model.
+- Router uses the effective run configuration and deduplicates model IDs. Tool-budget checks occur before the entire batch, avoiding partial writes caused by exceeding the budget midway.
+- Verification: 289 tests across 21 files passed, including local HTTP fixtures for stream integrity, task-isolated archive retrieval and repeated compaction. These fixtures do not establish success against a user's live API provider.
+
+The stream termination policy follows [OpenAI SDK helpers](https://github.com/openai/openai-node/blob/main/docs/helpers.md), which reject length/content-filter finishes before invoking tools. Original-record retrieval applies the just-in-time context approach described in [Anthropic's context engineering guidance](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents). This remains local Chat Completions context management, with no claim of native vendor compaction equivalence.
+
 ## Incident and actual causes
 
 The supplied run failed in T4 when the compactor returned an empty/invalid response and in T5 when protected recent messages exceeded the 32,768-token window. Tests and audits never ran because their implementation dependency failed. The planner also required shell commands on roles that cannot execute them. These are independent issues; increasing the context setting alone is not a fix.

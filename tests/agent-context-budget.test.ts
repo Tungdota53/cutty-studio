@@ -6,6 +6,7 @@ import { Agent } from '../src/agent.js';
 import { loadConfig } from '../src/config.js';
 import { ModelRouter } from '../src/router.js';
 import type { ModelClient } from '../src/model.js';
+import { ModelResponseError } from '../src/model.js';
 import { Tools } from '../src/tools.js';
 import { skillPrompt } from '../src/skill-prompt.js';
 import { estimateTokens, estimateMessages, newConversation } from '../src/conversation.js';
@@ -62,5 +63,48 @@ describe('Agent context allocation', () => {
     const result = await new Agent('budget', 'general', c.workspace, client, new ModelRouter(c), new Tools(c.workspace)).run('Continue current task', undefined, undefined, [], { state });
     expect(result).toBe('Recovered'); expect(sizes).toHaveLength(2); expect(sizes[1]).toBeLessThan(sizes[0]);
     expect(new Set(models)).toEqual(new Set([c.model]));
+  });
+  it('routes against the effective run configuration and attempts duplicate models only once', async () => {
+    const c = config(); c.models = {}; c.modelPool = [{ id: 'old', priority: 100, tags: [] }];
+    const chat = vi.fn().mockRejectedValue(new Error('Model unavailable'));
+    const client = { config: c, chat } as unknown as ModelClient;
+    const override = { models: { general: ['new', 'new'] }, modelPool: [{ id: 'new', priority: 100, tags: [] }, { id: 'new', priority: 10, tags: [] }] };
+    await expect(new Agent('budget', 'general', c.workspace, client, new ModelRouter(c), new Tools(c.workspace)).run('hello', undefined, undefined, [], { agentConfig: override })).rejects.toThrow('Model unavailable');
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat.mock.calls[0][2]).toBe('new');
+  });
+  it('does not fallback or compact and retry after partial tool-call stream output', async () => {
+    const c = config(); c.models = {}; c.modelPool = [{ id: 'first', priority: 100, tags: [] }, { id: 'second', priority: 50, tags: [] }];
+    const error = new ModelResponseError('context_length_exceeded after tool-call delta', true);
+    const chat = vi.fn().mockRejectedValue(error);
+    const client = { config: c, chat } as unknown as ModelClient;
+    const state = newConversation([{ role: 'user', content: 'Original task' }, { role: 'assistant', content: 'old output '.repeat(500) }]);
+    await expect(new Agent('budget', 'general', c.workspace, client, new ModelRouter(c), new Tools(c.workspace)).run('Continue', undefined, undefined, [], { state })).rejects.toBe(error);
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(state.compactions).toBe(0);
+  });
+  it('rejects an over-budget tool batch before performing writes', async () => {
+    const c = config(); c.maxAgentToolCalls = 16;
+    const calls = Array.from({ length: 17 }, (_, i) => ({ id: `write-${i}`, type: 'function' as const, function: { name: 'write_file', arguments: JSON.stringify({ path: `file-${i}.txt`, content: 'data' }) } }));
+    const chat = vi.fn().mockResolvedValue({ content: '', toolCalls: calls, model: c.model });
+    const client = { config: c, chat } as unknown as ModelClient;
+    const tools = new Tools(c.workspace); const run = vi.spyOn(tools, 'run');
+    const state = newConversation();
+    await expect(new Agent('budget', 'coder', c.workspace, client, new ModelRouter(c), tools).run('Write files', undefined, undefined, [], { state })).rejects.toThrow('Chưa thực thi lượt này');
+    expect(run).not.toHaveBeenCalled();
+    expect(state.messages).toEqual([{ role: 'user', content: 'Write files' }]);
+  });
+  it('retrieves archived evidence through the scoped callback and validates paging arguments', async () => {
+    const c = config(); const state = newConversation();
+    const call = (id: string, args: object) => ({ id, type: 'function' as const, function: { name: 'recall_context', arguments: JSON.stringify(args) } });
+    const chat = vi.fn().mockResolvedValueOnce({ content: '', toolCalls: [call('valid', { query: 'exit=1', limit: 2, beforeId: 17 }), call('invalid', { limit: 99 })], model: c.model }).mockResolvedValueOnce({ content: 'Observed failure', toolCalls: [], model: c.model });
+    const recall = vi.fn().mockReturnValue({ source: 'archive', untrusted: true, records: [{ archiveId: 10, excerpt: 'exit=1', incomplete: false }] });
+    const tools = new Tools(c.workspace); const run = vi.spyOn(tools, 'run');
+    const client = { config: c, chat } as unknown as ModelClient;
+    expect(await new Agent('budget', 'reviewer', c.workspace, client, new ModelRouter(c), tools).run('Inspect omitted error', undefined, undefined, [], { state, recall, readOnlyTask: true })).toBe('Observed failure');
+    expect(recall).toHaveBeenCalledExactlyOnceWith('exit=1', 2, 17); expect(run).not.toHaveBeenCalled();
+    expect(chat.mock.calls[0][1].some((definition: any) => definition.function.name === 'recall_context')).toBe(true);
+    const outcomes = state.messages.filter(message => message.role === 'tool').map(message => JSON.parse(message.content!));
+    expect(outcomes[0].result.records[0].archiveId).toBe(10); expect(outcomes[1].ok).toBe(false);
   });
 });

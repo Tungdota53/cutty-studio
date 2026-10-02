@@ -2,6 +2,13 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Context và phản hồi công cụ — 0.10.2
+
+- Giữ nguyên các chỉ dẫn ngắn ở giữa hội thoại khi nén; `recall_context` đọc lại bản ghi gốc của chính tác vụ với tìm kiếm và phân trang.
+- Bước tóm tắt chỉ gọi provider một lần, giới hạn 30 giây. Chặn stream rỗng, phản hồi bị cắt, JSON công cụ lỗi và ID trùng trước khi thực thi.
+- Không fallback sau stream đã phát dữ liệu một phần; kiểm tra ngân sách cả batch công cụ trước khi ghi file. Model routing tôn trọng cấu hình hiệu lực và loại ID trùng.
+- 289/289 kiểm thử đạt trên 21 tệp. [Chi tiết và giới hạn](docs/context-recovery.md).
+
 ## Sửa phục hồi context — 0.10.1
 
 - Nén được các lượt gọi công cụ lớn đã hoàn tất; giữ nguyên yêu cầu đầu/cuối, không chạy lại thao tác ghi file. Khi model tóm tắt lỗi/rỗng, dùng trích đoạn dự phòng có nhãn và báo rõ trên giao diện.
