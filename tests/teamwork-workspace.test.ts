@@ -30,14 +30,58 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('rejects overlapping runs and allows a fresh run after cancellation', async () => {
+    const dir=root(); let release!:()=>void, entered!:()=>void;
+    const started=new Promise<void>(resolve=>entered=resolve), blocked=new Promise<void>(resolve=>release=resolve);
+    let firstWorker=true;
+    const {team,store}=runner(dir,[{title:'Answer',role:'general',description:'answer-now'}],async messages=>{
+      const request=messages.findLast(message=>message.role==='user')?.content || '';
+      if(request.startsWith('Workspace mode:')) return {content:JSON.stringify({tasks:[{title:'Again',role:'general',description:'answer-now'}]}),toolCalls:[]};
+      if(firstWorker){firstWorker=false;entered();await blocked;}
+      return {content:'answer',toolCalls:[]};
+    });
+    const first=team.run('First',()=>{});
+    await started;
+    try { await expect(team.run('Overlap')).rejects.toThrow('đang chạy'); team.stop(); }
+    finally {release();}
+    expect((await first).status).toBe('cancelled');
+    expect((store.sessions()[0] as any).status).toBe('cancelled');
+    const second=await team.run('Second',()=>{});
+    expect(second.status).toBe('completed'); expect(second.tasks).toHaveLength(1);
+  });
+  it('repairs a malformed plan with prior context before starting workers', async () => {
+    const dir=root(); let workers=0, sawPriorOutput=false;
+    const {team}=runner(dir,[{title:'Answer',role:'general',acceptanceCriteria:23}],async messages=>{
+      const request=messages.findLast(message=>message.role==='user')?.content || '';
+      if(request.startsWith('Repair the previous plan')) {
+        sawPriorOutput=messages.some(message=>message.role==='assistant' && message.content?.includes('acceptanceCriteria'));
+        return {content:JSON.stringify({tasks:[{title:'Answer',role:'general',description:'answer-now'}]}),toolCalls:[]};
+      }
+      workers++; return {content:'answer',toolCalls:[]};
+    });
+    const events:any[]=[];
+    const result=await team.run('Question',event=>events.push(event));
+    expect(result.status).toBe('completed'); expect(sawPriorOutput).toBe(true); expect(workers).toBe(1);
+    expect(events.filter(event=>event.step==='plan_repair')).toHaveLength(1);
+    expect(fs.existsSync(path.join(dir,'.vibe','sessions',result.id,'agents','agent-plan-01','plan-attempt-2.json'))).toBe(true);
+  });
+  it('ends the durable session and emits a terminal event when planning cannot recover',async()=>{
+    const dir=root(); const {team,store}=runner(dir,[],async()=>({content:'{"tasks":[]}',toolCalls:[]}));
+    const events:any[]=[];
+    await expect(team.run('Question',event=>events.push(event))).rejects.toThrow('sau 3 lần');
+    expect((store.sessions()[0] as any).status).toBe('failed');
+    expect(events.filter(event=>event.type==='session_end')).toHaveLength(1);
+    expect(team.tasks).toHaveLength(0);
+  });
   it('reports a failed durable checkpoint even after the last task completed',async()=>{
-    const dir=root(); const {team}=runner(dir,[{id:'task',role:'general',title:'Answer'}],async()=>({content:'answer',toolCalls:[]}));
+    const dir=root(); const {team,store}=runner(dir,[{id:'task',role:'general',title:'Answer'}],async()=>({content:'answer',toolCalls:[]}));
     const original=fs.writeFileSync;
     const write=vi.spyOn(fs,'writeFileSync').mockImplementation(((file:any,data:any,...args:any[])=>{
       if(String(file).includes('agent-general-01')&&String(file).endsWith('progress.md')&&String(data).startsWith('COMPLETED'))throw new Error('checkpoint unavailable');
       return (original as any)(file,data,...args);
     }) as any);
     try{await expect(team.run('Question')).rejects.toThrow('checkpoint unavailable');}finally{write.mockRestore();}
+    expect((store.sessions()[0] as any).status).toBe('failed');
   });
   it('starts a dependent task while another independent worker is still running', async () => {
     const dir=root(); let releaseSlow!:()=>void, observedOverlap=false;

@@ -2,6 +2,21 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Phục hồi planner và điều phối — 0.9.0
+
+- Sửa lỗi `acceptanceCriteria: expected array, received string`: chuỗi đơn được chuyển thành một phần tử, giữ nguyên nội dung. Giới hạn là 30 tiêu chí, mỗi tiêu chí tối đa 1.000 ký tự. Các danh sách command, dependency, file và skill cũng được chuẩn hóa; dữ liệu sai kiểu vẫn bị chặn.
+- Đọc JSON có code fence và dấu ngoặc trong chuỗi. Từ chối đầu ra bị cắt hoặc chứa nhiều kế hoạch để planner sửa lại.
+- Planner tự sửa tối đa hai lần khi kế hoạch sai schema, dependency, role/phase hoặc agent. Giữ lịch sử/context và lưu từng đầu ra trong `plan-attempt-N.json`; giao diện báo lần sửa và trường bị lỗi. Lỗi API/khóa truy cập không bị lặp lại bởi cơ chế sửa kế hoạch.
+- Scheduler ưu tiên nhánh có chuỗi phụ thuộc còn lại dài hơn, theo số task. Đây là ước lượng, không dự đoán thời gian gọi model. Giữ nguyên giới hạn số agent, khóa ghi file và điều kiện nguồn ổn định cho kiểm thử/review.
+- Cập nhật task bị chặn theo đồ thị phụ thuộc, kể cả khi planner trả task không theo thứ tự. Phân biệt phiên bị hủy và thất bại; lưu trạng thái kết thúc khi lỗi checkpoint, đồng bộ sơ đồ và chặn chạy chồng trên cùng một orchestrator.
+- Planner lưu đúng model thực tế khi fallback. Có thể bắt đầu phiên mới sau khi hủy mà không mang theo task/controller cũ.
+
+Đã kiểm tra: 245 test tự động; luồng desktop với API giả lập trả kế hoạch sai lần đầu rồi sửa, chạy hai worker cùng lúc và đạt gate PASS; kiểm tra runtime đóng gói và khởi động EXE được thực hiện riêng.
+
+Cài bản EXE mới rồi gửi lại yêu cầu trong phiên Teamwork mới. Phiên đã lỗi trước khi nâng cấp không tự chạy tiếp.
+
+Dự án web giới thiệu Việt Nam đã yêu cầu nằm tại [examples/vietnam-discovery](examples/vietnam-discovery/README.md), chạy riêng bằng `npm start` trong thư mục đó.
+
 ## Agent chạy đồng thời — 0.8.0
 
 Scheduler dùng pool liên tục: task độc lập ở các pha khác nhau nhận slot ngay khi có chỗ trống, không đợi hết một batch. Worker có tệp riêng chạy song song; các tester/reviewer độc lập cũng chạy cùng lúc trên nguồn ổn định. Planner được hướng dẫn tạo các nhánh fan-out/fan-in, với test writer và worker cùng triển khai sau hợp đồng chung.
@@ -95,8 +110,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.8.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.8.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.9.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.9.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

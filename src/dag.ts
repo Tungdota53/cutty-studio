@@ -1,1 +1,33 @@
-import type{Task}from'./types.js';export function assertDag(tasks:Task[]){const ids=new Set(tasks.map(t=>t.id));for(const t of tasks)for(const d of t.dependencies)if(!ids.has(d))throw new Error(`Dependency không tồn tại: ${d}`);const seen=new Set<string>(),stack=new Set<string>();const visit=(id:string)=>{if(stack.has(id))throw new Error('Task DAG có cycle');if(seen.has(id))return;stack.add(id);for(const d of tasks.find(x=>x.id===id)!.dependencies)visit(d);stack.delete(id);seen.add(id)};tasks.forEach(t=>visit(t.id))}export function updateReady(tasks:Task[]){for(const t of tasks)if(t.status==='pending'){const ds=t.dependencies.map(id=>tasks.find(x=>x.id===id)!);if(ds.some(x=>['failed','blocked','cancelled'].includes(x.status)))t.status='blocked';else if(ds.every(x=>x.status==='completed'))t.status='ready'}return tasks}
+import type { Task } from './types.js';
+
+export function assertDag(tasks: Task[]) {
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  if (byId.size !== tasks.length) throw new Error('Task ID bị trùng');
+  const seen = new Set<string>(), stack = new Set<string>();
+  const visit = (id: string) => {
+    if (stack.has(id)) throw new Error(`Task DAG có cycle: ${[...stack, id].join(' → ')}`);
+    if (seen.has(id)) return;
+    const task = byId.get(id);
+    if (!task) throw new Error(`Dependency không tồn tại: ${id}`);
+    stack.add(id);
+    for (const dependency of task.dependencies) visit(dependency);
+    stack.delete(id); seen.add(id);
+  };
+  tasks.forEach(task => visit(task.id));
+}
+
+export function updateReady(tasks: Task[]) {
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const visited = new Set<string>();
+  const update = (task: Task) => {
+    if (visited.has(task.id)) return;
+    visited.add(task.id);
+    if (task.status !== 'pending') return;
+    const dependencies = task.dependencies.map(id => byId.get(id));
+    dependencies.forEach(dependency => { if (dependency) update(dependency); });
+    if (dependencies.some(dependency => !dependency || ['failed', 'blocked', 'cancelled'].includes(dependency.status))) task.status = 'blocked';
+    else if (dependencies.every(dependency => dependency?.status === 'completed')) task.status = 'ready';
+  };
+  tasks.forEach(update);
+  return tasks;
+}

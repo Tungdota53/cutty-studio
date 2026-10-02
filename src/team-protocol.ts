@@ -35,7 +35,21 @@ const validationRoles = new Set(['tester', 'reviewer', 'judge']);
 const ownedFiles = (task: Task) => (task.expectedFiles || []).map(file => path.posix.normalize(file.replace(/\\/g, '/')).toLowerCase());
 /** Fill available slots across phases; running tasks retain reservations until they finish. */
 export function executionBatch(tasks: Task[], limit: number): Task[] {
-  const ready = tasks.filter(task => task.status === 'ready').sort((a, b) => phases.indexOf(taskPhase(a)) - phases.indexOf(taskPhase(b)));
+  // Start the longest remaining dependency chain first to reduce downstream waits.
+  // This is a task-count heuristic; model runtimes are unknown at dispatch time.
+  const dependents = new Map(tasks.map(task => [task.id, [] as string[]]));
+  for (const task of tasks) if (['pending', 'ready'].includes(task.status)) {
+    for (const dependency of task.dependencies) dependents.get(dependency)?.push(task.id);
+  }
+  const ranks = new Map<string, number>(), visiting = new Set<string>();
+  const rank = (id: string): number => {
+    if (ranks.has(id)) return ranks.get(id)!;
+    if (visiting.has(id)) return 0; // Plans are validated before dispatch.
+    visiting.add(id);
+    const value = 1 + Math.max(0, ...(dependents.get(id) || []).map(rank));
+    visiting.delete(id); ranks.set(id, value); return value;
+  };
+  const ready = tasks.filter(task => task.status === 'ready').sort((a, b) => rank(b.id) - rank(a.id) || phases.indexOf(taskPhase(a)) - phases.indexOf(taskPhase(b)));
   const running = tasks.filter(task => task.status === 'running'), batch: Task[] = [];
   for (const task of ready) {
     if (running.length + batch.length >= limit) break;

@@ -12,6 +12,13 @@ const plan = () => parseTeamPlan(JSON.stringify({ tasks: [
   { id: 'audit', role: 'tester', phase: 'audit', title: 'Audit', dependencies: ['review'] }
 ] }));
 describe('Anti-style phase and ownership protocol', () => {
+  it('normalizes scalar list fields without confusing item count with string length', () => {
+    const criterion='Website giới thiệu địa danh Việt Nam đẹp, có animation và bố cục responsive.';
+    const tasks=parseTeamPlan(JSON.stringify({tasks:[{id:'a',title:'Create website',role:'coder',acceptanceCriteria:criterion,expectedFiles:'site/index.html',verificationCommands:'node -e "console.log(1,2)"',dependencies:null,skills:null},{id:'b',title:'Review',role:'reviewer',dependencies:'a'}]}));
+    expect(tasks[0].acceptanceCriteria).toEqual([criterion]);expect(tasks[0].expectedFiles).toEqual(['site/index.html']);
+    expect(tasks[0].verificationCommands).toEqual(['node -e "console.log(1,2)"']);expect(tasks[1].dependencies).toEqual(['a']);
+    for(const value of [Array(31).fill('criterion'),'x'.repeat(1001),{text:'wrong shape'},[1]]) expect(()=>parseTeamPlan(JSON.stringify({tasks:[{title:'A',acceptanceCriteria:value}]}))).toThrow();
+  });
   it('runs disjoint workers together and serializes colliding or undeclared writers', () => {
     const tasks = parseTeamPlan(JSON.stringify({ tasks: [
       { id: 'a', role: 'coder', title: 'A', expectedFiles: ['src/a.ts'] },

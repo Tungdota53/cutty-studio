@@ -1,0 +1,81 @@
+const { app, BrowserWindow } = require('electron');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+const output = path.join(root, 'release');
+const checks = [];
+let server, win;
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const check = (value, name) => { if (!value) throw new Error(name); checks.push(name); };
+const js = source => win.webContents.executeJavaScript(source, true);
+const count = () => js("document.querySelectorAll('.destination-card').length");
+const timer = setTimeout(() => finish(new Error('Website smoke timed out')), 45000);
+function finish(error) {
+  clearTimeout(timer);
+  server?.kill();
+  fs.mkdirSync(output, { recursive: true });
+  fs.writeFileSync(path.join(output, 'vietnam-result.json'), JSON.stringify({ ok: !error, checks, error: error?.stack }, null, 2));
+  if (error) console.error(error); else console.log(JSON.stringify({ ok: true, checks }));
+  app.exit(error ? 1 : 0);
+}
+app.whenReady().then(async () => {
+  server = spawn(process.execPath, [path.join(root, 'examples/vietnam-discovery/server.mjs')], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PORT: '5191' }, windowsHide: true, stdio: 'ignore'
+  });
+  let ready = false;
+  for (let i = 0; i < 50; i++) { try { if ((await fetch('http://127.0.0.1:5191')).ok) { ready = true; break; } } catch {} await wait(100); }
+  check(ready, 'Local server starts');
+  check((await fetch('http://127.0.0.1:5191/missing.svg')).status === 404, 'Missing assets return 404');
+  win = new BrowserWindow({ width: 1440, height: 1000, show: false, webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
+  const errors = [];
+  win.webContents.on('console-message', details => { if (details.level === 'error') errors.push(details.message); });
+  await win.loadURL('http://127.0.0.1:5191');
+  await js("localStorage.clear(); location.reload();");
+  await wait(400);
+  check(await count() === 6, 'Six destinations render');
+  check(await js("document.body.scrollWidth <= innerWidth"), 'Desktop has no horizontal overflow');
+  await js("document.querySelector('[data-region=north]').click()");
+  check(await count() === 2, 'Region filter');
+  await js("document.querySelector('[data-region=all]').click(); document.getElementById('destination-search').value='da lat'; document.getElementById('destination-search').dispatchEvent(new Event('input'))");
+  check(await count() === 1 && await js("document.querySelector('.destination-card').textContent.includes('Đà Lạt')"), 'Vietnamese search without accents');
+  await js("document.getElementById('destination-search').value=''; document.getElementById('destination-search').dispatchEvent(new Event('input')); document.querySelector('.destination-card .destination-open').click()");
+  check(await js("document.getElementById('destination-dialog').open"), 'Destination details open');
+  await js("document.getElementById('detail-save').click(); document.getElementById('destination-dialog').close(); document.getElementById('open-trip').click()");
+  check(await js("document.querySelectorAll('.trip-item').length === 1 && document.getElementById('saved-count').textContent === '1'"), 'Save and itinerary');
+  const downloadPath = path.join(output, 'vietnam-itinerary.txt');
+  const downloaded = new Promise((resolve, reject) => win.webContents.session.once('will-download', (_, item) => {
+    item.setSavePath(downloadPath); item.once('done', (_, state) => state === 'completed' ? resolve() : reject(new Error(state)));
+  }));
+  await js("document.getElementById('download-trip').click()");
+  await downloaded;
+  check(fs.readFileSync(downloadPath, 'utf8').includes('Vịnh Hạ Long'), 'Download contains saved destination');
+  await win.reload(); await wait(400);
+  check(await js("document.getElementById('saved-count').textContent === '1'"), 'Favorites persist after reload');
+  await js("document.getElementById('open-trip').click(); document.querySelector('.trip-item button').click()");
+  check(await js("document.getElementById('download-trip').disabled && document.getElementById('saved-count').textContent === '0'"), 'Removing last favorite disables export');
+  await js("document.getElementById('trip-dialog').close(); document.getElementById('next-scene').click()");
+  check(await js("document.getElementById('hero-place').textContent === 'Ninh Bình'"), 'Hero landscape switch');
+  await js("document.querySelector('[data-mood=nature]').click()");
+  check(await count() === 2, 'Experience filter');
+  await js("document.querySelector('[data-region=all]').click(); document.querySelectorAll('img').forEach(i=>i.loading='eager'); document.querySelectorAll('.reveal').forEach(e=>e.classList.add('visible')); window.scrollTo(0,0)");
+  await wait(600);
+  check(await js("[...document.images].filter(i=>i.getAttribute('src')).every(i=>i.complete && i.naturalWidth>0)"), 'All local illustrations load');
+  win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  check(await js("getComputedStyle(document.querySelector('.hero-art')).animationName === 'none'"), 'Reduced motion respected');
+  await js("document.getElementById('toast').hidden=true" ); await wait(250); await win.webContents.capturePage(); await wait(250);
+  fs.writeFileSync(path.join(output, 'vietnam-desktop.png'), (await win.webContents.capturePage()).toPNG());
+  win.setSize(390, 844); await wait(300);
+  check(await js("document.body.scrollWidth <= innerWidth"), 'Mobile has no horizontal overflow');
+  check(await js("document.querySelector('.hero-note').getBoundingClientRect().bottom <= document.querySelector('.hero-location').getBoundingClientRect().top"), 'Mobile hero content does not overlap');
+  await js("document.getElementById('menu-toggle').click()");
+  check(await js("document.getElementById('menu-toggle').getAttribute('aria-expanded')==='true' && getComputedStyle(document.getElementById('navigation')).display!=='none'"), 'Mobile menu opens');
+  await js("document.querySelector('#navigation a').click()");
+  check(await js("document.getElementById('menu-toggle').getAttribute('aria-expanded')==='false'"), 'Mobile navigation closes menu');
+  await js("window.scrollTo({top:0,behavior:'instant'})");
+  await js("document.getElementById('toast').hidden=true" ); await wait(250); await win.webContents.capturePage(); await wait(250);
+  fs.writeFileSync(path.join(output, 'vietnam-mobile.png'), (await win.webContents.capturePage()).toPNG());
+  check(errors.length === 0, 'No browser console errors');
+  finish();
+}).catch(finish);

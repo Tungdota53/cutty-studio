@@ -14,15 +14,20 @@ process.env.VIBE_WORKSPACE = root;
 process.env.VIBE_SMOKE_TEST = '1';
 process.env.VIBE_API_KEY = '';
 const requests = [];
+let plannerReplies = 0;
 const model = http.createServer((req, res) => {
   if (req.url === '/v1/models') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'smoke-model' }, { id: 'agent-specific-model' }] })); return; }
   let body = ''; req.on('data', data => body += data); req.on('end', () => {
     requests.push(JSON.parse(body));
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const request = requests.at(-1), user = request.messages.findLast(message => message.role === 'user')?.content || '';
-    if (user.includes('smoke-teamwork-page') && request.messages[0].content.includes('You are Vibe planner')) {
+    if ((user.includes('smoke-teamwork-page') || user.startsWith('Repair the previous plan')) && request.messages[0].content.includes('You are Vibe planner')) {
+      if (plannerReplies++ === 0) {
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: '{"tasks":[{"title":"Create page","acceptanceCriteria":23}]}' } }] }) + '\n\ndata: [DONE]\n\n'); return;
+      }
+      assert(request.messages.some(message => message.role === 'assistant' && message.content?.includes('acceptanceCriteria')));
       const content = JSON.stringify({ tasks: [
-        { id:'T1', agentId:'frontend', title:'Create smoke page', role:'coder', description:'smoke-create-page', expectedFiles:['smoke-teamwork.html'], dependencies:[] },
+        { id:'T1', acceptanceCriteria:'Tệp HTML thực tế chứa nội dung alo alo và có bằng chứng công cụ kiểm tra.', agentId:'frontend', title:'Create smoke page', role:'coder', description:'smoke-create-page', expectedFiles:['smoke-teamwork.html'], dependencies:[] },
         { id:'T1B', agentId:'backend', title:'Create independent styles', role:'coder', description:'smoke-style-page', expectedFiles:['smoke-teamwork.css'], dependencies:[] },
         { id:'T2', title:'Test smoke page', role:'tester', description:'smoke-check-page', dependencies:['T1','T1B'] },
         { id:'T3', title:'Review smoke page', role:'reviewer', description:'smoke-review-page', dependencies:['T1','T1B'] },
@@ -160,7 +165,7 @@ app.on('browser-window-created', (_, win) => {
       win.setSize(1320, 900);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['planner repairs malformed output with retained context', 'desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.exit(1); }
   });

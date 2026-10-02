@@ -19,14 +19,16 @@ import { SkillLibrary } from './skills.js';
 import { dependencyFingerprints, qualityGate, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
 import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
 import { scheduleRepair } from './team-repair.js';
+import { planObject, validatedPlan } from './plan-recovery.js';
 
 export function parseTeamPlan(raw: string): Task[] {
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Planner không trả JSON');
+  // Routers/models sometimes emit a scalar for a one-item list. Preserve the
+  // whole value; never split filenames or shell commands on punctuation.
+  const list = (maxLength: number, maxItems: number) => z.preprocess(value => value == null ? [] : typeof value === 'string' ? (value.trim() ? [value.trim()] : []) : value, z.array(z.string().max(maxLength)).max(maxItems));
   const plan = z.object({ tasks: z.array(z.object({
     id: z.string().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(), title: z.string().min(1).max(300), description: z.string().max(16000).optional(),
-    role: roleSchema.default('coder'), phase: phaseSchema.optional(), acceptanceCriteria: z.array(z.string().max(1000)).max(30).default([]), verificationCommands: z.array(z.string().max(2000)).max(12).default([]), agentId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(), dependencies: z.array(z.string()).default([]), expectedFiles: z.array(z.string()).max(200).default([]), skills: z.array(z.string().max(120)).max(8).default([])
-  })).min(1).max(40) }).parse(JSON.parse(match[0]));
+    role: roleSchema.default('coder'), phase: phaseSchema.optional(), acceptanceCriteria: list(1000, 30), verificationCommands: list(2000, 12), agentId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/).optional(), dependencies: list(64, 40), expectedFiles: list(1000, 200), skills: list(120, 8)
+  })).min(1).max(40) }).parse(planObject(raw));
   const tasks: Task[] = plan.tasks.map((task, index) => ({ ...task, id: task.id || `T${index + 1}`, description: task.description || task.title, status: task.dependencies.length ? 'pending' : 'ready', createdAt: new Date().toISOString(), retries: 0 }));
   if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error('Task ID bị trùng');
   assertDag(tasks);
@@ -38,6 +40,8 @@ export class Teamwork {
   tasks: Task[] = [];
   agents = new Map<string, { role: Role; status: string; model: string }>();
   private abort = new AbortController();
+  private running = false;
+  private internalFailure = false;
 
   constructor(
     private c: Config,
@@ -55,7 +59,18 @@ export class Teamwork {
     return parseTeamPlan(raw);
   }
 
-  async run(
+  async run(goal: string, onEvent: (event: TeamworkEvent | string) => void = console.log) {
+    if (this.running) throw new Error('Teamwork đang chạy. Dừng hoặc đợi phiên hiện tại kết thúc.');
+    this.running = true;
+    this.abort = new AbortController();
+    this.internalFailure = false;
+    this.tasks = [];
+    this.agents.clear();
+    try { return await this.runSession(goal, onEvent); }
+    finally { this.running = false; }
+  }
+
+  private async runSession(
     goal: string,
     onEvent: (event: TeamworkEvent | string) => void = console.log
   ) {
@@ -79,6 +94,7 @@ export class Teamwork {
     const evidence = new Map<string, TaskEvidence>();
     let repairRounds = 0;
     this.db.session(id, 'running', this.c.model, goal);
+    try {
     const worktrees = new Worktrees(this.c.workspace, root);
     let implementationWorkspace: Promise<{ dir: string; branch: string }> | undefined;
     let git;
@@ -102,7 +118,7 @@ export class Teamwork {
     const baseTools = new Tools(this.c.workspace, this.approve, 'planner', library);
     const plannerId = 'agent-plan-01';
     const namedPlanner = this.c.namedAgents?.find(agent => agent.enabled && agent.role === 'planner');
-    const plannerModel = this.router.route({ role: 'planner', agentId: namedPlanner?.id, taskType: 'planning', complexity: 5, contextTokens: 1000, requiresTools: true, requiresLongContext: false }).selectedModel;
+    let plannerModel = this.router.route({ role: 'planner', agentId: namedPlanner?.id, taskType: 'planning', complexity: 5, contextTokens: 1000, requiresTools: true, requiresLongContext: false }).selectedModel;
     const planner = new Agent(plannerId, 'planner', this.c.workspace, this.client, this.router, baseTools, log);
 
     this.agents.set(plannerId, { role: 'planner', status: 'running', model: plannerModel });
@@ -121,20 +137,34 @@ export class Teamwork {
     });
 
     let planRaw: string;
+    const plannerState = newConversation();
     try {
-      planRaw = await planner.run(
-        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. All implementation tasks share one session worktree. Parallel workers must declare disjoint exact expectedFiles. Build a fan-out/fan-in DAG: run independent exploration/specification and implementation branches concurrently; sibling tests, reviews and challenges should depend on the shared implementation, not on each other unless they truly consume their outputs. Do not invent sequential dependencies just to order phases. Test-writing and implementation should be sibling coder tasks after a shared specification contract, not a test-writer-then-all-workers chain unless workers actually consume generated test output. Substantial goals should have at least two useful independent implementation tasks with disjoint files when the architecture permits. The scheduler continuously fills free slots across phases as soon as actual dependencies finish. Validators run concurrently on a stable source; repairs wait for them to drain. Return phase, acceptanceCriteria and verificationCommands for each task. Allowed phases: survey, specification, test_design, implementation, verification, review, challenge, audit, acceptance. For substantial project changes include specification, test writing, implementation, execution checks, all relevant independent reviewers, challenger, forensic auditor and a final fresh victory-auditor. Auditor must depend on reviews/challenges and implementations; acceptance must follow audit. Keep greetings and small tasks proportional. Every gate task reports JSON verdict PASS/FAIL/UNVERIFIED with findings and five handoff components. Explicit verificationCommands must actually execute through tools. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
+      const planned = await validatedPlan(async (attempt, feedback) => {
+        const output = await planner.run(
+          attempt ? feedback :
+        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. All implementation tasks share one session worktree. Parallel workers must declare disjoint exact expectedFiles. Build a fan-out/fan-in DAG: run independent exploration/specification and implementation branches concurrently; sibling tests, reviews and challenges should depend on the shared implementation, not on each other unless they truly consume their outputs. Do not invent sequential dependencies just to order phases. Test-writing and implementation should be sibling coder tasks after a shared specification contract, not a test-writer-then-all-workers chain unless workers actually consume generated test output. Substantial goals should have at least two useful independent implementation tasks with disjoint files when the architecture permits. The scheduler continuously fills free slots across phases as soon as actual dependencies finish. Validators run concurrently on a stable source; repairs wait for them to drain. Return phase, acceptanceCriteria and verificationCommands for each task. List fields must use JSON arrays: acceptanceCriteria:["A complete criterion may be longer than 30 characters"], verificationCommands:["npm test"], dependencies:[], expectedFiles:[], skills:[]. Allowed phases: survey, specification, test_design, implementation, verification, review, challenge, audit, acceptance. For substantial project changes include specification, test writing, implementation, execution checks, all relevant independent reviewers, challenger, forensic auditor and a final fresh victory-auditor. Auditor must depend on reviews/challenges and implementations; acceptance must follow audit. Keep greetings and small tasks proportional. Every gate task reports JSON verdict PASS/FAIL/UNVERIFIED with findings and five handoff components. Explicit verificationCommands must actually execute through tools. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
         this.abort.signal, undefined, [], {
-          namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal,
-          onModel: model => emit({ type: 'agent_status', agentId: plannerId, agentName: namedPlanner?.name || 'Planner', role: 'planner', status: 'running', model }),
+          state: plannerState, namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal,
+          onModel: model => {
+            plannerModel = model;
+            this.agents.set(plannerId, { role: 'planner', status: 'running', model });
+            this.db.agent(id, { id: plannerId, role: 'planner', status: 'running', model });
+            emit({ type: 'agent_status', agentId: plannerId, agentName: namedPlanner?.name || 'Planner', role: 'planner', status: 'running', model });
+          },
           checkpoint: memory => { this.db.saveConversation(`${id}:planner`, memory); writeAgentArtifact(sessionRoot, plannerId, 'BRIEFING.md', `# Planner briefing\n\nGoal: ${goal}\nModel: ${plannerModel}\nRole: planner (read-only)\nCheckpoint: ${id}:planner\nCompactions: ${memory.compactions}\n${memory.summary}\n`); },
           onItem: item => { this.db.archiveItem(`${id}:planner`, item); writeAgentArtifact(sessionRoot, plannerId, 'progress.md', `RUNNING\nLast update: ${new Date().toISOString()}\nStep: ${item.role}\n`); },
           onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' })
         }
       );
-      this.tasks = this.parsePlan(planRaw);
-      for (const task of this.tasks) assignedAgent(this.c, task.agentId, task.role);
-      assertDag(this.tasks);
+        writeAgentArtifact(sessionRoot, plannerId, `plan-attempt-${attempt + 1}.json`, output);
+        return output;
+      }, raw => {
+        const tasks = this.parsePlan(raw);
+        for (const task of tasks) assignedAgent(this.c, task.agentId, task.role);
+        return tasks;
+      }, this.abort.signal, (attempt, reason) => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', step: 'plan_repair', message: `Planner đang sửa kế hoạch (${attempt}/2): ${reason}` }));
+      planRaw = planned.raw;
+      this.tasks = planned.value;
       writeAgentArtifact(sessionRoot, plannerId, 'handoff.md', planRaw);
       writeAgentArtifact(sessionRoot, plannerId, 'progress.md', 'COMPLETED\n');
 
@@ -394,7 +424,7 @@ export class Teamwork {
           this.db.task(id, t);
         });
         for (const task of executionBatch(this.tasks, this.c.maxAgents)) {
-          const promise = executeTask(task, dispatchIndex++).catch(error => { fatalError = error; this.abort.abort(); }).then(() => { pool.delete(task.id); });
+          const promise = executeTask(task, dispatchIndex++).catch(error => { fatalError = error; this.internalFailure = true; this.abort.abort(); }).then(() => { pool.delete(task.id); });
           pool.set(task.id, promise);
         }
       }
@@ -409,7 +439,7 @@ export class Teamwork {
     if (fatalError) throw fatalError;
 
     const failed = this.tasks.filter(t => t.status !== 'completed');
-    const status = failed.length ? 'failed' : 'completed';
+    const status = this.abort.signal.aborted ? 'cancelled' : failed.length ? 'failed' : 'completed';
     this.db.session(id, status, this.c.model, goal);
     for (const proof of evidence.values()) proof.stale = staleEvidence(proof);
     const gate = qualityGate(this.tasks, evidence);
@@ -430,6 +460,25 @@ export class Teamwork {
       gate,
       failures: failed.map(x => x.error),
     };
+    } catch (error) {
+      const status = this.abort.signal.aborted && !this.internalFailure ? 'cancelled' : 'failed';
+      this.db.session(id, status, this.c.model, goal);
+      for (const task of this.tasks) {
+        if (['pending', 'ready', 'running'].includes(task.status)) {
+          task.status = status === 'cancelled' ? 'cancelled' : 'blocked';
+          task.error ||= `Phiên đã dừng: ${String(error)}`;
+          this.db.task(id, task);
+        }
+      }
+      for (const [agentId, agent] of this.agents) if (agent.status === 'running') {
+        agent.status = status;
+        this.db.agent(id, { id: agentId, ...agent, status });
+        emit({ type: 'agent_status', agentId, ...agent });
+      }
+      emit({ type: 'task_snapshot', sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task) })), timestamp: new Date().toISOString() });
+      emit({ type: 'session_end', sessionId: id, status, message: String(error), gate: { verdict: 'FAIL', reasons: [String(error)] }, timestamp: new Date().toISOString() });
+      throw error;
+    }
   }
 }
 
