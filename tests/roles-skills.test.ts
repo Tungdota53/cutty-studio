@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { SkillLibrary } from '../src/skills.js';
+import { assignedAgent, teamSchema } from '../src/roles.js';
 import { Tools } from '../src/tools.js';
 import { Agent } from '../src/agent.js';
 import { ModelClient } from '../src/model.js';
@@ -19,6 +20,32 @@ function skill(dir: string, name: string, description: string, body = 'Read the 
   fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n${body}`); return folder;
 }
 describe('Role permissions and skill loading', () => {
+  it('loads five GitHub skills with pinned provenance and paginated references', () => {
+    const lib = new SkillLibrary(root()); const external = lib.list().filter(skill => skill.source === 'github');
+    expect(external).toHaveLength(5);
+    for (const skill of external) {
+      expect(skill.provenance).toMatchObject({ integrity: true, license: 'Apache-2.0' });
+      expect(skill.provenance?.commit).toMatch(/^[a-f0-9]{40}$/);
+      expect(lib.load(skill.id).instructions.length).toBeGreaterThan(100);
+    }
+    expect(lib.resource('github:openai/security-best-practices', 'references/javascript-general-web-frontend-security.md', 1, 10)).toContain('Đọc tiếp từ dòng 11');
+  });
+  it('rejects a tampered GitHub skill instead of loading its instructions', () => {
+    const dir = root(), builtins = path.join(dir, 'skills'); fs.mkdirSync(builtins);
+    fs.cpSync('src/vendor-skills/anthropic/frontend-design', path.join(dir, 'vendor-skills', 'anthropic', 'frontend-design'), { recursive: true });
+    const lib = new SkillLibrary(dir, path.join(dir, 'absent'), builtins);
+    expect(lib.load('github:anthropic/frontend-design').provenance?.integrity).toBe(true);
+    fs.appendFileSync(path.join(dir, 'vendor-skills/anthropic/frontend-design/SKILL.md'), '\nTampered instruction');
+    expect(() => lib.load('github:anthropic/frontend-design')).toThrow('checksum');
+  });
+  it('keeps two agents of the same role on separately assigned models and validates identity', () => {
+    const c = loadConfig(root());
+    c.namedAgents = ['one', 'two'].map(id => ({ id, name: id, role: 'coder', model: 'model-' + id, skills: [], instructions: '', enabled: true }));
+    for (const id of ['one', 'two']) expect(new ModelRouter(c).route({ agentId: id, role: 'coder', taskType: 'coding', complexity: 5, contextTokens: 100, requiresTools: true, requiresLongContext: false }).selectedModel).toBe('model-' + id);
+    expect(() => assignedAgent(c, 'one', 'reviewer')).toThrow('không phù hợp');
+    c.namedAgents[0].enabled = false; expect(() => assignedAgent(c, 'one', 'coder')).toThrow('không khả dụng');
+    expect(() => teamSchema.parse({ namedAgents: [c.namedAgents[1], c.namedAgents[1]] })).toThrow();
+  });
   it('uses the assigned role model before higher-scoring pool candidates', () => {
     const c = loadConfig(root()); c.agentProfiles = { tester: { model: 'assigned-tester' } };
     c.modelPool = [{ id: 'high-scoring', tags: ['tools', 'tester'], priority: 999 }];

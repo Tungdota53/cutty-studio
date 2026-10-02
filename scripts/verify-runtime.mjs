@@ -34,6 +34,8 @@ try {
   const team = await teamReady;
   assert.equal(team.type, 'team_config'); assert.equal(team.roles.length, 7);
   for (const id of ['repository-planning', 'scoped-implementation', 'code-review', 'evidence-testing']) assert(team.skills.some(skill => skill.id === 'builtin:' + id), `Missing bundled skill: ${id}`);
+  const githubSkills = team.skills.filter(skill => skill.source === 'github');
+  assert.equal(githubSkills.length, 5); assert(githubSkills.every(skill => skill.provenance?.integrity && skill.provenance.license === 'Apache-2.0'));
   socket.close();
   child.send({ type: 'shutdown' });
   await new Promise(resolve => child.once('exit', resolve));

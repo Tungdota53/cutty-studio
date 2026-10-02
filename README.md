@@ -2,6 +2,19 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Agent riêng và skill GitHub — 0.4.0
+
+Mở **Thiết lập agent**, mở một agent và nhập **Model riêng**. Có thể tạo nhiều agent cùng vai nhưng dùng model khác nhau; thứ tự chọn là model agent → model vai → model mặc định. Nút **Lấy danh sách model từ API** nạp danh sách từ nhà cung cấp; bạn vẫn có thể nhập ID model. Cấu hình agent được lưu theo dự án. Chọn agent trong ô soạn chat để nói chuyện trực tiếp; Teamwork nhận danh sách agent đang bật và phân công bằng `agentId` khớp vai.
+
+Bản này đóng gói thêm năm skill nguyên bản từ repo chính chủ, kèm giấy phép Apache 2.0 và toàn bộ tài nguyên tham chiếu:
+
+- [Anthropic Skills](https://github.com/anthropics/skills/tree/8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4/skills): `frontend-design`, `webapp-testing`, `mcp-builder`.
+- [OpenAI Skills](https://github.com/openai/skills/tree/49f948faa9258a0c61caceaf225e179651397431/skills/.curated): `security-best-practices`, `security-threat-model`.
+
+Mỗi skill có `.provenance.json` ghi repo, commit, đường dẫn và SHA-256 từng tệp. Thư viện kiểm tra checksum trước khi nạp, hiển thị nguồn/giấy phép trên giao diện và chặn tệp bị thay đổi. Đây là xác minh nguồn gốc và tính toàn vẹn, không phải chứng chỉ chất lượng hoặc chữ ký số độc lập. Các script được giữ nguyên, không tự chạy khi cài. Kiểm thử web cần Python/Playwright trong môi trường dự án; skill không tự cài những phụ thuộc này.
+
+Xem giấy phép tại `src/vendor-skills/<nguồn>/<skill>/LICENSE.txt`. Script `scripts/vendor-skills-manifest.mjs` tạo manifest cho các commit đã ghim; cần đọc và kiểm tra nguồn trước khi cập nhật commit.
+
 ## Phân vai agent và skill — 0.3.0
 
 Mở **Nhóm agent** để cấu hình bảy vai: điều phối, lập kế hoạch, lập trình, kiểm thử, rà soát, đánh giá và trợ lý. Mỗi vai có hướng dẫn, model riêng, danh sách skill và tùy chọn tự chọn thêm skill theo nhiệm vụ. Cấu hình lưu tại `.vibe/config.json` của dự án. Planner phân vai và skill cho từng task; task và agent có ID riêng, cùng trạng thái và danh sách skill đã nạp.
@@ -33,8 +46,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.3.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.3.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.4.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.4.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

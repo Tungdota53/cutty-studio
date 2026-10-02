@@ -1,7 +1,7 @@
 export type Role = 'orchestrator'|'planner'|'coder'|'tester'|'reviewer'|'judge'|'general';
 export type TaskStatus = 'pending'|'ready'|'running'|'blocked'|'completed'|'failed'|'cancelled';
 export type Quality = 'fast'|'balanced'|'high'|'max';
-export interface Task { id:string; title:string; description:string; role:Role; skills?:string[]; loadedSkills?:string[]; status:TaskStatus; dependencies:string[]; expectedFiles?:string[]; assignedAgentId?:string; worktreePath?:string; createdAt:string; startedAt?:string; completedAt?:string; resultSummary?:string; error?:string; retries?:number; }
+export interface Task { id:string; title:string; description:string; role:Role; agentId?:string; skills?:string[]; loadedSkills?:string[]; status:TaskStatus; dependencies:string[]; expectedFiles?:string[]; assignedAgentId?:string; worktreePath?:string; createdAt:string; startedAt?:string; completedAt?:string; resultSummary?:string; error?:string; retries?:number; }
 export interface AgentState { id:string; role:Role; status:'idle'|'running'|'waiting'|'failed'|'stopped'|'cancelled'; model:string; currentTaskId?:string; worktreePath?:string; startedAt?:string; lastActivityAt?:string; tokenUsage?:TokenUsage; }
 export interface TokenUsage { prompt:number; completion:number; total:number; cached?:number; estimated?:boolean }
 export interface ToolCall { id:string; type:'function'; function:{name:string;arguments:string} }
@@ -29,3 +29,4 @@ export interface TeamworkEvent {
   timestamp?: string;
   [key: string]: any;
 }
+

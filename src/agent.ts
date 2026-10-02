@@ -3,13 +3,16 @@ import { ModelClient } from './model.js';
 import { ModelRouter } from './router.js';
 import { Tools, toolDefinitions } from './tools.js';
 import { SkillLibrary, type Skill } from './skills.js';
-import { roleProfile, canUseTool } from './roles.js';
+import { roleProfile, canUseTool, assignedAgent } from './roles.js';
 import { systemPrompt } from './prompts.js';
+import type { Config } from './config.js';
 import type { EventLog } from './events.js';
 import { ConversationContext, newConversation, estimateMessages, estimateTokens, type ConversationState, type ContextEvent } from './conversation.js';
 
 export interface AgentMemoryOptions {
   state?: ConversationState;
+  namedAgentId?: string;
+  agentConfig?: Partial<Config>;
   skills?: string[];
   skillWorkspace?: string;
   onSkills?: (skills: Skill[]) => void;
@@ -26,11 +29,13 @@ export class Agent {
     const state = memoryOptions.state || newConversation(history.filter(message => message.role === 'user' || message.role === 'assistant'));
     const context = new ConversationContext(this.client.config || {}, state, memoryOptions.onContext, memoryOptions.checkpoint);
     const library = new SkillLibrary(memoryOptions.skillWorkspace || this.root);
-    const profile = roleProfile(this.role, this.client.config);
-    const skills = library.select(this.role, task, this.client.config, memoryOptions.skills);
+    const config = memoryOptions.agentConfig || this.client.config || {};
+    const profile = roleProfile(this.role, config);
+    const assigned = assignedAgent(config, memoryOptions.namedAgentId, this.role);
+    const skills = library.select(this.role, task, config, [...(memoryOptions.skills || []), ...(assigned?.skills || [])]);
     memoryOptions.onSkills?.(skills);
     this.log?.emit('skills_loaded', { agentId: this.id, role: this.role, skills: skills.map(skill => skill.id) });
-    const baseSystem = systemPrompt(this.role, this.root) + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
+    const baseSystem = systemPrompt(this.role, this.root) + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + (assigned ? `\nAssigned agent: ${assigned.name} (${assigned.id})\n${assigned.instructions}\n` : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
     const skillSystem = () => baseSystem + skills.map(skill => 'Skill ' + skill.id + ':\n' + skill.instructions).join('\n\n');
     let system = skillSystem();
     const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name));
@@ -38,7 +43,7 @@ export class Agent {
     state.messages.push(user); memoryOptions.onItem?.(user);
     for (let iteration = 0, toolCount = 0; iteration < 20; iteration++) {
       signal?.throwIfAborted();
-      const decision = this.router.route({ role: this.role, taskType: 'coding', complexity: 5, contextTokens: context.stats(system, definitions).estimatedInput, requiresTools: true, requiresLongContext: false, preferQuality: ['reviewer', 'planner'].includes(this.role) });
+      const decision = this.router.route({ role: this.role, agentId: assigned?.id, taskType: 'coding', complexity: 5, contextTokens: context.stats(system, definitions).estimatedInput, requiresTools: true, requiresLongContext: false, preferQuality: ['reviewer', 'planner'].includes(this.role) });
       let result, error: unknown, visibleOutput = false;
       const models = [decision.selectedModel, ...decision.fallbacks];
       for (const model of models) {

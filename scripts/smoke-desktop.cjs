@@ -11,6 +11,7 @@ process.env.VIBE_SMOKE_TEST = '1';
 process.env.VIBE_API_KEY = '';
 const requests = [];
 const model = http.createServer((req, res) => {
+  if (req.url === '/v1/models') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'smoke-model' }, { id: 'agent-specific-model' }] })); return; }
   let body = ''; req.on('data', data => body += data); req.on('end', () => {
     requests.push(JSON.parse(body));
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -41,6 +42,9 @@ app.on('browser-window-created', (_, win) => {
       const profiles = JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8'));
       assert.equal(profiles.agentProfiles.reviewer.instructions, 'Review authentication with evidence');
       assert(profiles.agentProfiles.coder.skills.includes('builtin:scoped-implementation'));
+      await win.webContents.executeJavaScript(`document.querySelector('[data-agent=assistant] [data-field=model]').value='agent-specific-model';document.getElementById('team-form').requestSubmit();`);
+      await wait(win, `document.querySelector('[data-agent=assistant] summary').textContent.includes('agent-specific-model')`);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8')).namedAgents.find(agent=>agent.id==='assistant').model, 'agent-specific-model');
       await win.webContents.executeJavaScript(`document.getElementById('skill-search').value='review';document.getElementById('skill-search').dispatchEvent(new Event('input'));`);
       await wait(win, `document.getElementById('skill-results').textContent.includes('code-review') && !document.getElementById('skill-results').textContent.includes('imagegen')`);
       await new Promise(resolve => setTimeout(resolve, 350));
@@ -49,14 +53,18 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.getElementById('settings-button').click();document.getElementById('base-url').value='http://127.0.0.1:${port}/v1';document.getElementById('model-input').value='smoke-model';document.getElementById('api-key').value='smoke-private-key';document.getElementById('context-window').value=16384;document.getElementById('output-tokens').value=2048;document.getElementById('settings-form').requestSubmit();`);
       await wait(win, `!document.getElementById('settings-dialog').open && document.getElementById('model-name').textContent === 'smoke-model'`);
       const saved = fs.readFileSync(path.join(root, 'settings.json'), 'utf8'); assert(!saved.includes('smoke-private-key')); assert(saved.includes('encryptedKey'));
+      await win.webContents.executeJavaScript(`document.getElementById('fetch-models').click();`);
+      await wait(win, `document.querySelectorAll('#available-models option').length===2`);
       await win.webContents.executeJavaScript(`document.getElementById('prompt').value='Kiểm tra desktop';document.getElementById('composer').requestSubmit();`);
       await wait(win, `document.querySelector('.message.assistant .message-content strong') && !document.getElementById('stop-button').hidden === false`);
       assert.equal(requests.at(-1).model, 'smoke-model');
       assert.equal(requests.at(-1).max_tokens, 2048);
       assert(requests.at(-1).messages[0].content.includes('builtin:workspace-assistant'));
       await wait(win, `document.getElementById('usage-output').textContent==='24'`);
+      await win.webContents.executeJavaScript(`document.getElementById('chat-agent').value='assistant';`);
       await win.webContents.executeJavaScript(`document.getElementById('prompt').value='Tiếp tục từ kết quả trên';document.getElementById('composer').requestSubmit();`);
       await wait(win, `document.querySelectorAll('.message.assistant').length===2 && document.getElementById('stop-button').hidden`);
+      assert.equal(requests.at(-1).model, 'agent-specific-model');
       assert(requests.at(-1).messages.some(item => item.role==='assistant' && item.content.includes('Sẵn sàng làm việc')));
       await win.webContents.executeJavaScript(`document.getElementById('context-button').click();document.getElementById('compact-context').click();`);
       await wait(win, `Number(document.getElementById('context-compactions').textContent)>=1 && document.getElementById('stop-button').hidden`);

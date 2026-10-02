@@ -80,10 +80,13 @@ describe('Desktop backend', () => {
       const server = await studio(); const client = connect(server.url); await client.wait('init');
       const port = (model.address() as import('node:net').AddressInfo).port;
       client.socket.send(JSON.stringify({ type: 'configure', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'test-model', apiKey: 'fake-key' })); await client.wait('configured');
+      const namedAgents = ['alpha', 'beta'].map(id => ({ id, name: id, role: 'general', model: 'model-' + id, skills: [], instructions: 'Agent ' + id, enabled: true }));
+      client.socket.send(JSON.stringify({ type: 'configure_team', namedAgents })); await client.wait('team_config');
+      let turn = 0;
       for (const prompt of ['First question', 'Follow-up question']) {
-        client.socket.send(JSON.stringify({ type: 'chat', prompt, sessionId: 'chat-test-conversation' })); await client.wait('run_end');
+        client.socket.send(JSON.stringify({ type: 'chat', prompt, agentId: namedAgents[turn++].id, sessionId: 'chat-test-conversation' })); await client.wait('run_end');
       }
-      expect(requests[1].model).toBe('test-model');
+      expect(requests[0].model).toBe('model-alpha'); expect(requests[1].model).toBe('model-beta');
       expect(requests[1].messages.map((msg: any) => msg.content)).toContain('First question');
       expect(requests[1].messages.map((msg: any) => msg.content)).toContain('Hello from model');
       client.socket.send(JSON.stringify({ type: 'get_conversation', sessionId: 'chat-test-conversation' }));

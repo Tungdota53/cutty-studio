@@ -8,3 +8,6 @@
 
 #role-picker{font:inherit;color:inherit;background:#17171b;border:1px solid #35353e;border-radius:8px;padding:10px}#team-dialog .dialog-footer{position:sticky;bottom:-24px;background:#1b1c21;padding:16px 0;margin-bottom:0}
 
+
+.named-agent-section{margin-bottom:24px}.named-agent-card{border:1px solid #35353e;border-radius:10px;padding:12px;margin:10px 0}.named-agent-card summary{cursor:pointer;font-size:13px;overflow-wrap:anywhere}.named-agent-fields{display:grid;gap:8px;margin-top:14px}.named-agent-fields select,.named-agent-fields textarea{font:inherit;color:inherit;background:#17171b;border:1px solid #35353e;border-radius:8px;padding:10px}.skill-results a{display:block;color:#beb3ff;font-size:11px}#chat-agent{max-width:135px;font:inherit;color:inherit;background:transparent;border:0}
+

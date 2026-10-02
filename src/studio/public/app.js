@@ -146,6 +146,7 @@ function connect() {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     switch (msg.type) {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
+      case 'model_catalog': $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
       case 'skill_results': showSkills(msg.skills || []); break;
       case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); break;
       case 'configured':
@@ -192,7 +193,7 @@ $('composer').onsubmit = event => {
   if (!config?.apiKey) { $('settings-status').textContent = 'Nhập khóa API để bắt đầu.'; $('settings-dialog').showModal(); return; }
   const teamwork = $('mode').value === 'teamwork';
   if (!currentSession || !currentSession.startsWith('chat-')) currentSession = `chat-${crypto.randomUUID()}`;
-  if (!send({ type: 'chat', prompt: teamwork ? `/teamwork ${prompt}` : prompt, sessionId: currentSession })) return;
+  if (!send({ type: 'chat', prompt: teamwork ? `/teamwork ${prompt}` : prompt, sessionId: currentSession, agentId: teamwork ? undefined : $('chat-agent').value || undefined })) return;
   setBusy(true); assistant = null; response = ''; addMessage('user', prompt); $('chat-title').textContent = prompt.slice(0, 80); $('prompt').value = ''; $('prompt').style.height = '';
 };
 $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
@@ -234,12 +235,18 @@ function showSkills(skills) {
     const row = document.createElement('p');
     const name = document.createElement('strong'); name.textContent = skill.name;
     const detail = document.createElement('small'); detail.textContent = `${skill.id} · ${skill.description}`;
+    if (skill.provenance) {
+      const source = document.createElement('a'); source.href = skill.provenance.url; source.target = '_blank'; source.rel = 'noopener noreferrer';
+      source.textContent = `${skill.provenance.repository} · ${skill.provenance.license} · ${skill.provenance.commit.slice(0, 8)} · ${skill.provenance.integrity ? 'Checksum khớp' : 'Checksum không khớp'}`;
+      row.append(source);
+    }
     row.append(name, detail); $('skill-results').append(row);
   }
   if (!skills.length) $('skill-results').textContent = 'Không tìm thấy skill phù hợp.';
 }
 function showTeam(data) {
   teamData = data; $('team-max').value = data.maxAgents;
+  showNamedAgents(data);
   const previousRole = $('role-picker').value || 'coder';
   $('role-picker').replaceChildren();
   for (const role of data.roles) { const option = document.createElement('option'); option.value = role.id; option.textContent = `${role.label} · ${role.id}`; $('role-picker').append(option); }
@@ -265,6 +272,7 @@ function showTeam(data) {
     card.append(title, description, access, modelLabel, instructionsLabel, autoLabel, choices); $('role-cards').append(card);
   }
   showSkills(data.skills);
+  if ($('skill-search').value.trim()) send({ type: 'search_skills', query: $('skill-search').value });
 }
 function showAgent(event) {
   if (event.type === 'session_start') { liveAgents.clear(); $('live-agents').replaceChildren(); }
@@ -272,7 +280,7 @@ function showAgent(event) {
   const state = { ...liveAgents.get(event.agentId), ...event }; liveAgents.set(event.agentId, state);
   $('live-agents').replaceChildren();
   for (const [id, agent] of liveAgents) {
-    const row = document.createElement('p'); row.textContent = `${id} · ${agent.role} · ${agent.status || agent.type}\n${agent.taskId || ''} ${agent.model || ''}\nSkill: ${(agent.skills || []).join(', ') || 'Đang chọn'}`;
+    const row = document.createElement('p'); row.textContent = `${agent.agentName || id} · ${agent.role} · ${agent.status || agent.type}\n${agent.taskId || ''} ${agent.model || ''}\nSkill: ${(agent.skills || []).join(', ') || 'Đang chọn'}`;
     $('live-agents').append(row);
   }
 }
@@ -287,6 +295,48 @@ $('team-form').onsubmit = event => {
     autoSkills: card.querySelector('[data-field=autoSkills]').checked,
     skills: [...card.querySelectorAll('[data-skill]:checked')].map(node => node.dataset.skill)
   };
-  send({ type: 'configure_team', profiles, maxAgents: Number($('team-max').value) });
+  const namedAgents = [...$('named-agent-cards').children].map(card => ({
+    id: card.dataset.agent, name: card.querySelector('[data-field=name]').value.trim(), role: card.querySelector('[data-field=role]').value,
+    model: card.querySelector('[data-field=model]').value.trim(), enabled: card.querySelector('[data-field=enabled]').checked,
+    instructions: card.querySelector('[data-field=instructions]').value,
+    skills: [...card.querySelectorAll('[data-skill]:checked')].map(input => input.dataset.skill)
+  }));
+  send({ type: 'configure_team', profiles, namedAgents, maxAgents: Number($('team-max').value) });
 };
+function namedAgentCard(agent, data) {
+  const card = document.createElement('details'); card.className = 'named-agent-card'; card.dataset.agent = agent.id;
+  const summary = document.createElement('summary'); summary.textContent = `${agent.name} · ${agent.role} · ${agent.model || 'Model theo vai'}`; card.append(summary);
+  const fields = document.createElement('div'); fields.className = 'named-agent-fields';
+  for (const [key, label, type] of [['name', 'Tên agent', 'input'], ['role', 'Vai trò', 'select'], ['model', 'Model riêng', 'input'], ['instructions', 'Hướng dẫn riêng', 'textarea']]) {
+    const field = document.createElement('label'); field.className = 'field'; field.textContent = label;
+    const input = document.createElement(type); input.dataset.field = key;
+    if (key === 'role') for (const role of data.roles) { const option = document.createElement('option'); option.value = role.id; option.textContent = role.label; input.append(option); }
+    input.value = agent[key] || ''; if (key === 'name') input.required = true;
+    if (key === 'model') { input.setAttribute('list', 'available-models'); input.placeholder = 'Nhập hoặc chọn model từ API'; }
+    field.append(input); fields.append(field);
+  }
+  const enabledLabel = document.createElement('label'); enabledLabel.className = 'skill-option';
+  const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.dataset.field = 'enabled'; enabled.checked = agent.enabled; enabledLabel.append(enabled, document.createTextNode('Cho phép phân công tác vụ')); fields.append(enabledLabel);
+  const skills = document.createElement('div'); skills.className = 'skill-choices';
+  for (const skill of data.skills.filter(skill => skill.source === 'github' || (agent.skills || []).includes(skill.id))) {
+    const label = document.createElement('label'); label.className = 'skill-option'; const input = document.createElement('input'); input.type = 'checkbox'; input.dataset.skill = skill.id; input.checked = (agent.skills || []).includes(skill.id);
+    label.append(input, document.createTextNode(skill.name)); skills.append(label);
+  }
+  fields.append(skills);
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'quiet-button'; remove.textContent = 'Xóa agent'; remove.onclick = () => card.remove(); fields.append(remove);
+  card.append(fields); return card;
+}
+function showNamedAgents(data) {
+  const selected = $('chat-agent').value; $('chat-agent').replaceChildren();
+  const defaultOption = document.createElement('option'); defaultOption.value = ''; defaultOption.textContent = 'Trợ lý mặc định'; $('chat-agent').append(defaultOption);
+  $('named-agent-cards').replaceChildren();
+  for (const agent of data.namedAgents || []) {
+    $('named-agent-cards').append(namedAgentCard(agent, data));
+    if (agent.enabled) { const option = document.createElement('option'); option.value = agent.id; option.textContent = agent.name; $('chat-agent').append(option); }
+  }
+  $('chat-agent').value = [...$('chat-agent').options].some(option => option.value === selected) ? selected : '';
+}
+$('add-agent').onclick = () => { if (!teamData || busy) return; const card = namedAgentCard({ id: 'agent-' + crypto.randomUUID().slice(0, 8), name: 'Agent mới', role: 'coder', model: '', instructions: '', skills: [], enabled: true }, teamData); card.open = true; $('named-agent-cards').append(card); };
+$('fetch-models').onclick = () => send({ type: 'get_models' });
 connect();
+
