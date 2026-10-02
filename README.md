@@ -1,0 +1,119 @@
+# Cutty Studio / Vibe Studio
+
+Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
+
+## Context và đầu vào / đầu ra — 0.2.0
+
+- Phản hồi assistant, lời gọi công cụ và kết quả được đưa vào context của lượt sau; trạng thái này được lưu theo từng chat và mở lại sau khi khởi động app.
+- Tự nén phần lịch sử cũ khi đầu vào ước tính đạt 80% ngân sách. Giữ yêu cầu đầu tiên, yêu cầu mới nhất và các cặp gọi công cụ/kết quả hoàn chỉnh. Bản ghi nhớ lưu mục tiêu, ràng buộc, quyết định, bằng chứng và việc còn lại; không đặt bản ghi nhớ vào system instructions.
+- Lịch sử chat đầy đủ và kết quả công cụ gốc vẫn được lưu trong SQLite. Kết quả công cụ quá dài được đưa vào context dưới dạng trích đoạn có nhãn. Nếu nén thất bại hoặc yêu cầu hiện tại quá lớn, app báo lỗi; không tự cắt yêu cầu của bạn.
+- Bảng **Ngữ cảnh** hiển thị dung lượng ước tính, giới hạn, phần dành cho đầu ra, số lần nén, token vào/ra/cache và bản ghi nhớ. Nút **Nén ngay** hoặc `/compact` cho phép nén thủ công.
+- Giới hạn mặc định: context 32.768 token, đầu ra 4.096 token. Đặt đúng giới hạn model trong Cài đặt hoặc dùng `VIBE_CONTEXT_WINDOW` / `VIBE_OUTPUT_TOKENS`. Ước tính context dùng kích thước UTF-8, không phải tokenizer chính xác của mọi model. Usage lấy từ nhà cung cấp nếu có; số ước tính được đánh dấu `~` và không dùng làm số liệu tính tiền.
+- Trong Teamwork, agent tiếp theo nhận mục tiêu, báo cáo và đường dẫn worktree từ các dependency đã hoàn thành. Các báo cáo vẫn cần được kiểm tra bằng công cụ.
+- CLI hỗ trợ `/resume <chat-id>`, `/compact` và `/clear` để bắt đầu chat mới.
+
+Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](https://github.com/openai/codex/blob/main/codex-rs/core/src/compact.rs) và [OpenAI Docs về conversation state](https://developers.openai.com/api/docs/guides/conversation-state). Đây là triển khai riêng trên Chat Completions để tương thích router hiện có; không phải backend Codex/Claude nguyên bản và không dùng encrypted compaction của Responses API.
+
+![Giao diện ngữ cảnh](docs/context-preview.png)
+
+## Vibe Studio — ứng dụng Windows
+
+Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
+
+- `release/Vibe-Studio-0.2.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.2.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+
+Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
+
+Mở app, chọn thư mục ở góc trái, vào **Cài đặt** để nhập URL API, khóa và tên model. Khóa được mã hóa bằng Electron safeStorage/Windows và lưu trong hồ sơ ứng dụng; không lưu khóa vào dự án. Nếu mã hóa không khả dụng, khóa chỉ tồn tại trong bộ nhớ. Bản web giữ khóa trong phiên backend hiện tại.
+
+Backend dùng Node.js đi kèm và SQLite native cùng phiên bản ABI, nên không cần cài Node.js để mở app. Các tác vụ trong dự án vẫn cần công cụ tương ứng như Git, npm hoặc Python khi sử dụng chúng. Ứng dụng cần kết nối mạng tới nhà cung cấp API để trả lời. Bản build hiện chưa có chữ ký số nhà phát hành.
+
+```powershell
+npm install
+npm run desktop
+npm run desktop:pack
+node scripts/verify-runtime.mjs
+```
+
+`npm run build` sao chép đầy đủ giao diện vào `dist`. `desktop:pack` tạo cả installer và portable trong `release`. `node scripts/verify-runtime.mjs` kiểm tra backend đã đóng gói. `node scripts/verify-exe.mjs` khởi động executable trong chế độ kiểm tra ẩn, kiểm tra kết nối rồi đóng ứng dụng. Kiểm tra giao diện desktop bằng `npx electron scripts/smoke-desktop.cjs`, dùng model HTTP cục bộ giả lập và hồ sơ riêng trong `.vibe/desktop-smoke`; kết quả và ảnh xem trước ở `release`. Phát triển/build bản desktop cần Node.js 22.12 trở lên.
+
+Phím tắt: **Ctrl N** tạo chat mới, **Ctrl ,** mở cài đặt, **Enter** gửi, **Shift Enter** xuống dòng. Chế độ Teamwork lưu tác vụ/nhánh riêng và vẫn cần tích hợp thay đổi theo quy trình worktree bên dưới.
+
+Multi-agent coding CLI dùng trực tiếp OpenAI-compatible API của 9Router. Node.js 20+, TypeScript, SQLite, streaming tool calling, task DAG, bounded agents, Git worktrees, model routing và OpenSSH.
+
+## Features
+
+- Chat streaming thật qua `POST /chat/completions`; nhiều tool calls mỗi turn; retry 429/5xx/network; timeout/cancellation.
+- `/teamwork`: planner tạo DAG; coder/tester/reviewer chạy theo dependencies và giới hạn concurrency.
+- Coder dùng branch/worktree riêng khi repository sạch. Workspace dirty bị dừng để không mất dữ liệu.
+- SQLite WAL lưu sessions/tasks/agents; JSONL events được redact.
+- Model theo role, weighted router, fallback, quality policy.
+- File sandbox, symlink/path traversal guard, secret-file block, approval cho lệnh destructive.
+- OpenSSH production transport dùng host-key checking mặc định.
+
+## Installation
+
+```powershell
+npm install
+npm run build
+npm test
+npm link
+```
+
+## 9Router setup
+
+```powershell
+$env:VIBE_BASE_URL="https://9router.tungdota.io.vn/v1"
+$env:VIBE_API_KEY="YOUR_KEY"
+$env:VIBE_MODEL="cx/gpt-5.6-sol"
+$env:VIBE_MAX_AGENTS="4"
+vibe
+```
+
+Không lưu `VIBE_API_KEY` trong config hoặc DB. Precedence: env > project `.vibe/config.json` > user `~/.vibe/config.json` > default.
+
+## Commands
+
+`/help`, `/model`, `/models`, `/model-role`, `/model-pool`, `/router-status`, `/quality`, `/teamwork`, `/agents`, `/tasks`, `/status`, `/plan`, `/diff`, `/test`, `/review`, `/logs`, `/stop`, `/clear`, `/resume`, `/sessions`, `/ssh`, `/exit`.
+
+## Teamwork và worktrees
+
+Planner inspect repo rồi trả task DAG. Scheduler chỉ chạy dependencies đã hoàn tất. Coder nhận `.vibe/worktrees/<session>/<agent>`. Tester và reviewer dùng bằng chứng thật. Không tự merge hoặc xóa worktree; inspect/integration thủ công giữ an toàn user branch. Nếu repo dirty, teamwork báo lỗi thay vì chạm thay đổi chưa commit.
+
+## Config
+
+```json
+{
+  "quality": "balanced",
+  "maxAgents": 4,
+  "useWorktrees": true,
+  "models": {"planner":"model-a","coder":["model-a","model-b"],"reviewer":"model-a"},
+  "modelPool": [{"id":"model-a","tags":["coding","tools","high-quality"],"priority":100}],
+  "sshHosts": {"stage":{"host":"example.com","port":22,"username":"ubuntu","remoteWorkspace":"/srv/app"}}
+}
+```
+
+## Safety, resume, Windows
+
+Lệnh nguy hiểm yêu cầu nhập chính xác `APPROVE`. Path nằm trong workspace đã canonicalize. SSH dùng `ssh.exe` từ PATH, `StrictHostKeyChecking=yes`, key/agent của OS. Sessions tồn tại trong `.vibe/vibe.db`; `/sessions` liệt kê sau restart. Windows paths có spaces được truyền qua Node process API.
+
+## Manual transport test
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:VIBE_API_KEY"; "Content-Type" = "application/json" }
+$body = @{ model=$env:VIBE_MODEL; messages=@(@{role="user";content="Reply exactly OK"}) } | ConvertTo-Json -Depth 10
+Invoke-RestMethod -Method POST -Uri "$env:VIBE_BASE_URL/chat/completions" -Headers $headers -Body $body
+```
+
+## Smoke test
+
+```text
+> xin chào
+> /model
+> /teamwork tạo project hello world nhỏ, thêm test, build và review
+```
+
+## Known limits
+
+MVP chưa tự merge coder branches, chưa tiếp tục active agent giữa chừng sau restart, chưa có SFTP remote editing, Ink dashboard, judge/best-of-N execution, hoặc writing-team pipeline. Những capability chưa có không được giả lập. Production model client và OpenSSH transport không mock; tests dùng fake local server.

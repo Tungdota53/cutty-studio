@@ -1,0 +1,37 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci
+      - name: Test
+        shell: pwsh
+        run: |
+          Remove-Item Env:NO_COLOR -ErrorAction SilentlyContinue
+          $env:TERM = 'xterm-256color'
+          node node_modules/vitest/vitest.mjs run --maxWorkers=1
+      - run: npm run desktop:pack
+      - run: node scripts/verify-runtime.mjs
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Vibe-Studio-Windows
+          path: |
+            release/*-Setup.exe
+            release/*-Portable.exe
+            release/runtime-result.json

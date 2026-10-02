@@ -1,0 +1,2 @@
+import fs from 'node:fs';import path from 'node:path';import {redact} from './security.js';
+export class EventLog{constructor(private root:string,private sessionId:string){fs.mkdirSync(path.join(root,'sessions',sessionId),{recursive:true})}emit(type:string,data:Record<string,unknown>={}){const row=redact(JSON.stringify({ts:new Date().toISOString(),sessionId:this.sessionId,type,...data}));fs.appendFileSync(path.join(this.root,'sessions',this.sessionId,'events.jsonl'),row+'\n')}}

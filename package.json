@@ -1,0 +1,63 @@
+{
+  "name": "vibe-cli-teamwork",
+  "version": "0.2.0",
+  "description": "Windows coding workspace with persistent context and multi-agent teamwork",
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "author": "Vibe Studio",
+  "bin": {
+    "vibe": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "desktop": "npm run build && electron .",
+    "desktop:pack": "npm run build && node scripts/build-desktop.mjs && electron-builder --win --x64 --publish never",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "studio": "tsx src/studio/server.ts"
+  },
+  "build": {
+    "appId": "studio.vibe.desktop",
+    "productName": "Vibe Studio",
+    "directories": { "output": "release" },
+    "files": ["dist/**/*", "desktop/**/*", "package.json"],
+    "extraResources": [{ "from": "build/runtime", "to": "runtime" }],
+    "npmRebuild": false,
+    "afterPack": "scripts/after-pack.cjs",
+    "asarUnpack": ["**/*.node"],
+    "win": { "target": ["nsis", "portable"], "icon": "desktop/icon.ico", "signExecutable": false },
+    "portable": { "artifactName": "Vibe-Studio-${version}-${arch}-Portable.${ext}" },
+    "nsis": { "artifactName": "Vibe-Studio-${version}-${arch}-Setup.${ext}", "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true }
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "better-sqlite3": "^12.4.1",
+    "chalk": "^6.0.1",
+    "cli-table3": "^0.6.5",
+    "execa": "^9.6.0",
+    "ora": "^9.4.1",
+    "picocolors": "^1.1.1",
+    "ws": "^8.22.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.7.2",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

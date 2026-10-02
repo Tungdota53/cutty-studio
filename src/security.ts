@@ -1,0 +1,6 @@
+import fs from 'node:fs';import path from 'node:path';
+const SECRET=/(authorization\s*[:=]\s*bearer\s+)[^\s"']+|((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,"']+/gi;
+export const redact=(v:string)=>v.replace(SECRET,(_m,a,b)=>(a||b)+'[REDACTED]').replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,'[REDACTED PRIVATE KEY]');
+export function safePath(root:string,input:string,write=false){const base=fs.realpathSync(root);const target=path.resolve(base,input);const parent=write&&!fs.existsSync(target)?fs.realpathSync(path.dirname(target)):fs.realpathSync(target);const rel=path.relative(base,parent);if(rel.startsWith('..')||path.isAbsolute(rel))throw new Error('Path ngoài workspace bị chặn');if(fs.existsSync(target)){const real=fs.realpathSync(target);const r=path.relative(base,real);if(r.startsWith('..')||path.isAbsolute(r))throw new Error('Symlink ngoài workspace bị chặn');}return target;}
+export const isSensitivePath=(p:string)=>/(^|[\\/])(\.env(?:\.|$)|\.npmrc$|id_(rsa|ed25519)$|credentials|private[_-]?key|token)([\\/]|$)/i.test(p);
+export const isDestructive=(c:string)=>/(\brm\s+-rf\b|\bdel\s+\/|git\s+(reset\s+--hard|clean\s+-[a-z]*f|push\s+.*--force)|\b(drop\s+(database|table)|docker\s+(system\s+)?prune|shutdown|reboot)\b)/i.test(c);

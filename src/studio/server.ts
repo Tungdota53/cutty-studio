@@ -1,0 +1,631 @@
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { exec } from 'node:child_process';
+import { WebSocketServer, WebSocket } from 'ws';
+import { loadConfig, assertConfigured, type Config } from '../config.js';
+import { Store } from '../db.js';
+import { ModelClient } from '../model.js';
+import { ModelRouter } from '../router.js';
+import { Tools, toolDefinitions } from '../tools.js';
+import { Agent } from '../agent.js';
+import { Teamwork } from '../teamwork.js';
+import crypto from 'node:crypto';
+import { ConversationContext, contextLimits } from '../conversation.js';
+import { systemPrompt } from '../prompts.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+export interface StudioOptions {
+  /** Target port. Defaults to 3840. Set to 0 for automatic ephemeral port. */
+  port?: number;
+  /** Host to bind. Defaults to '127.0.0.1'. */
+  host?: string;
+  /** Whether to automatically open the browser on startup. Defaults to true on Windows (disabled in test/CI). */
+  openBrowser?: boolean;
+  /** Optional workspace override path. Defaults to config.workspace. */
+  workspace?: string;
+  /** Private desktop backend credential. */
+  token?: string;
+}
+
+export interface StudioServerInstance {
+  server: http.Server;
+  wss: WebSocketServer;
+  port: number;
+  host: string;
+  url: string;
+  close: () => Promise<void>;
+  requestApproval: (cmd: string, tool?: string, riskLevel?: string) => Promise<boolean>;
+}
+
+export function parseDiffStats(diff: string): { additions: number; deletions: number; files: number } {
+  let additions = 0;
+  let deletions = 0;
+  const files = new Set<string>();
+  const lines = diff.split('\n');
+  for (const line of lines) {
+    if (line.startsWith('+++ b/')) {
+      files.add(line.slice(6));
+    } else if (line.startsWith('+') && !line.startsWith('+++')) {
+      additions++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      deletions++;
+    }
+  }
+  return { additions, deletions, files: files.size };
+}
+
+export function sanitizeConfig(config: Config): Config {
+  const sanitized = { ...config };
+  if (sanitized.apiKey) {
+    sanitized.apiKey = '[REDACTED]';
+  }
+  return sanitized;
+}
+
+export async function startStudio(options?: number | StudioOptions): Promise<StudioServerInstance> {
+  let targetPort = 3840;
+  let host = '127.0.0.1';
+  let openBrowser = process.platform === 'win32' && !process.env.CI && process.env.NODE_ENV !== 'test';
+  let workspaceOverride: string | undefined;
+
+  if (typeof options === 'number') {
+    targetPort = options;
+  } else if (options && typeof options === 'object') {
+    if (typeof options.port === 'number') {
+      targetPort = options.port;
+    }
+    if (options.host) {
+      host = options.host;
+    }
+    if (typeof options.openBrowser === 'boolean') {
+      openBrowser = options.openBrowser;
+    }
+    if (options.workspace) {
+      workspaceOverride = options.workspace;
+    }
+  }
+
+  let c = loadConfig(workspaceOverride);
+  c.contextWindow = Number(process.env.VIBE_CONTEXT_WINDOW || c.contextWindow || 32768);
+  c.maxOutputTokens = Number(process.env.VIBE_OUTPUT_TOKENS || c.maxOutputTokens || 4096);
+  contextLimits(c);
+  const db = new Store(path.join(c.workspace, '.vibe'));
+  let client = new ModelClient(c);
+  let router = new ModelRouter(c);
+  let activeAbort: AbortController | undefined;
+  let activeTeam: Teamwork | undefined;
+  let busy = false;
+  const token = typeof options === 'object' ? options.token : undefined;
+
+  const clients = new Set<WebSocket>();
+
+  function broadcast(data: any) {
+    const payload = JSON.stringify(data);
+    for (const ws of clients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(payload);
+        } catch {}
+      }
+    }
+  }
+
+  interface PendingApproval {
+    id: string;
+    command: string;
+    tool: string;
+    riskLevel: string;
+    timer: NodeJS.Timeout;
+    resolve: (val: boolean) => void;
+  }
+
+  const pendingApprovals = new Map<string, PendingApproval>();
+
+  const requestApproval = async (
+    cmd: string,
+    tool = 'run_command',
+    riskLevel = 'HIGH'
+  ): Promise<boolean> => {
+    const id = `appr_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        if (pendingApprovals.has(id)) {
+          pendingApprovals.delete(id);
+          broadcast({
+            type: 'terminal_log',
+            text: `[Approval Bridge] Thao tác ${id} bị từ chối do quá thời gian chờ (120s timeout).`,
+          });
+          resolve(false);
+        }
+      }, 120000);
+
+      pendingApprovals.set(id, { id, command: cmd, tool, riskLevel, timer, resolve });
+
+      broadcast({
+        type: 'approval_request',
+        id,
+        command: cmd,
+        tool,
+        riskLevel,
+        timeoutMs: 120000,
+      });
+
+      broadcast({
+        type: 'terminal_log',
+        text: `[Approval Bridge] Đang chờ người dùng phê duyệt [${riskLevel}]: ${cmd}`,
+      });
+    });
+  };
+
+  const approve = async (cmd: string): Promise<boolean> => {
+    return requestApproval(cmd);
+  };
+
+  async function getDiffText(): Promise<string> {
+    try {
+      const tools = new Tools(c.workspace, approve);
+      const res = await tools.run('git_diff', '{}');
+      return res.output || '';
+    } catch {
+      return '';
+    }
+  }
+
+  const htmlPath = path.join(__dirname, 'public', 'index.html');
+
+  const requestListener: http.RequestListener = async (req, res) => {
+    try {
+      const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      const pathname = parsedUrl.pathname;
+      if (token && parsedUrl.searchParams.get('token') !== token) {
+        res.writeHead(401); res.end('Unauthorized'); return;
+      }
+
+      if (pathname === '/app.css' || pathname === '/app.js') {
+        res.writeHead(200, { 'Content-Type': pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
+        res.end(fs.readFileSync(path.join(__dirname, 'public', pathname.slice(1))));
+        return;
+      }
+
+      if (pathname === '/' || pathname === '/index.html') {
+        let content: string;
+        try {
+          content = fs.existsSync(htmlPath)
+            ? fs.readFileSync(htmlPath, 'utf8')
+            : '<!DOCTYPE html><html><body><h1>Vibe Studio UI</h1></body></html>';
+        } catch {
+          content = '<!DOCTYPE html><html><body><h1>Vibe Studio UI</h1></body></html>';
+        }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(content);
+        return;
+      }
+
+      if (pathname === '/api/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            config: sanitizeConfig(c),
+            sessions: db.sessions(),
+            cwd: process.cwd(),
+            routerMetrics: router.status(),
+          })
+        );
+        return;
+      }
+
+      if (pathname === '/api/diff') {
+        try {
+          const diff = await getDiffText();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, diff, stats: parseDiffStats(diff) }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: String(e) }));
+        }
+        return;
+      }
+
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: err?.message || 'Internal Server Error' }));
+    }
+  };
+
+  const { server, boundPort } = await (async () => {
+    if (targetPort === 0) {
+      const srv = http.createServer(requestListener);
+      await new Promise<void>((resolve, reject) => {
+        srv.once('error', reject);
+        srv.listen(0, host, () => resolve());
+      });
+      const addr = srv.address() as AddressInfo;
+      return { server: srv, boundPort: addr.port };
+    }
+
+    let candidatePort = targetPort;
+    const maxAttempts = 51; // 3840..3890 (or targetPort..targetPort+50)
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const srv = http.createServer(requestListener);
+      const success = await new Promise<boolean>((resolve, reject) => {
+        srv.once('error', (err: any) => {
+          if (err.code === 'EADDRINUSE') {
+            try {
+              srv.close();
+            } catch {}
+            resolve(false);
+          } else {
+            reject(err);
+          }
+        });
+        srv.listen(candidatePort, host, () => {
+          resolve(true);
+        });
+      });
+
+      if (success) {
+        const addr = srv.address() as AddressInfo;
+        return { server: srv, boundPort: addr ? addr.port : candidatePort };
+      }
+      candidatePort++;
+    }
+    throw new Error(`Failed to bind port after ${maxAttempts} attempts starting at ${targetPort}`);
+  })();
+
+  const url =
+    host === '127.0.0.1' || host === '0.0.0.0' || host === 'localhost'
+      ? `http://localhost:${boundPort}`
+      : `http://${host}:${boundPort}`;
+
+  const wss = new WebSocketServer({ server, verifyClient: ({ req }: { req: http.IncomingMessage }) => {
+    const origin = req.headers.origin;
+    const expected = `http://${req.headers.host}`;
+    if (origin && origin !== expected) return false;
+    return !token || new URL(req.url || '/', expected).searchParams.get('token') === token;
+  } });
+
+  wss.on('connection', async (ws) => {
+    clients.add(ws);
+
+    const initialDiff = await getDiffText();
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: 'init',
+        config: sanitizeConfig(c),
+        diff: initialDiff,
+        sessions: db.sessions(),
+        routerMetrics: router.status(),
+        busy,
+      })
+    );
+
+    ws.on('message', async (data) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(data.toString());
+      } catch {
+        ws.send(JSON.stringify({ type: 'error', message: 'Invalid payload' }));
+        return;
+      }
+
+      try {
+        if (msg.type === 'stop') {
+          activeAbort?.abort();
+          activeTeam?.stop();
+          for (const [id, pending] of pendingApprovals) {
+            clearTimeout(pending.timer); pending.resolve(false); pendingApprovals.delete(id);
+          }
+        } else if (msg.type === 'configure') {
+          if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi cấu hình.');
+          const endpoint = new URL(msg.baseUrl);
+          if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('API URL không hợp lệ.');
+          if (typeof msg.model !== 'string' || !msg.model.trim()) throw new Error('Nhập tên model.');
+          const model = msg.model.trim();
+          const limits = { contextWindow: msg.contextWindow ?? c.contextWindow, maxOutputTokens: msg.maxOutputTokens ?? c.maxOutputTokens };
+          contextLimits(limits);
+          c = { ...c, ...limits, baseUrl: endpoint.toString().replace(/\/$/, ''), apiKey: typeof msg.apiKey === 'string' && msg.apiKey ? msg.apiKey : c.apiKey, model, models: {}, modelPool: [{ id: model, tags: ['coding', 'tools', 'reasoning'], priority: 100, maxContext: limits.contextWindow }] };
+          client = new ModelClient(c); router = new ModelRouter(c);
+          ws.send(JSON.stringify({ type: 'configured', config: sanitizeConfig(c) }));
+        } else if (msg.type === 'init') {
+          const diff = await getDiffText();
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(
+            JSON.stringify({
+              type: 'init',
+              config: sanitizeConfig(c),
+              diff,
+              sessions: db.sessions(),
+              routerMetrics: router.status(),
+              busy,
+            })
+          );
+        } else if (msg.type === 'get_diff') {
+          const diff = await getDiffText();
+          ws.send(JSON.stringify({ type: 'diff', diff }));
+        } else if (msg.type === 'get_sessions') {
+          ws.send(JSON.stringify({ type: 'sessions', sessions: db.sessions() }));
+        } else if (msg.type === 'get_conversation') {
+          const sessionId = String(msg.sessionId || '');
+          const rows = db.db.prepare('SELECT agent_id,content FROM messages WHERE session_id=? ORDER BY id').all(sessionId) as { agent_id: string; content: string }[];
+          const tasks = db.tasks(sessionId);
+          const memory = db.conversation(sessionId);
+          const manager = new ConversationContext(c, memory);
+          ws.send(JSON.stringify({ type: 'conversation', sessionId, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
+        } else if (msg.type === 'approval_response') {
+          const p = pendingApprovals.get(msg.id);
+          if (p) {
+            clearTimeout(p.timer);
+            pendingApprovals.delete(msg.id);
+            const isApproved = Boolean(msg.approved);
+            p.resolve(isApproved);
+            broadcast({
+              type: 'terminal_log',
+              text: `[Approval Bridge] Thao tác ${msg.id} ${isApproved ? 'đã được phê duyệt' : 'đã bị từ chối'}.`,
+            });
+          }
+        } else if (msg.type === 'command' || msg.type === 'chat') {
+          const line = (msg.prompt || msg.line || '').trim();
+          if (!line) return;
+          if (busy) { ws.send(JSON.stringify({ type: 'error', message: 'Một tác vụ đang chạy.' })); return; }
+          busy = true;
+          activeAbort = new AbortController();
+          broadcast({ type: 'run_start' });
+          try {
+
+          if (line.startsWith('/')) {
+            const [cmd, ...parts] = line.slice(1).split(' ');
+            const arg = parts.join(' ').trim();
+
+            if (cmd === 'compact') {
+              assertConfigured(c);
+              const sessionId = String(msg.sessionId || '');
+              if (!/^chat-[a-zA-Z0-9-]{1,80}$/.test(sessionId)) throw new Error('Chọn một cuộc trò chuyện để nén ngữ cảnh.');
+              const memory = db.conversation(sessionId);
+              const manager = new ConversationContext(c, memory, event => broadcast({ ...event, sessionId }), state => db.saveConversation(sessionId, state));
+              await manager.prepare(systemPrompt('general', c.workspace), toolDefinitions, client, c.model, activeAbort.signal, true);
+              broadcast({ type: 'memory_summary', sessionId, summary: memory.summary });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'teamwork') {
+              assertConfigured(c);
+              const tw = new Teamwork(c, db, client, router, approve);
+              activeTeam = tw;
+              broadcast({
+                type: 'terminal_log',
+                text: `[Teamwork] Khởi chạy tối đa ${c.maxAgents} agents cho mục tiêu: ${arg}`,
+              });
+
+              await tw.run(arg, (ev) => {
+                if (typeof ev === 'string') {
+                  broadcast({ type: 'terminal_log', text: ev });
+                } else {
+                  broadcast({ type: 'teamwork_event', event: ev });
+                }
+              });
+
+              broadcast({ type: 'stream_chunk', token: `**Kết quả Teamwork**\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}` });
+
+              const diff = await getDiffText();
+              broadcast({ type: 'diff', diff });
+              broadcast({ type: 'sessions', sessions: db.sessions() });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'diff') {
+              const diff = await getDiffText();
+              broadcast({ type: 'diff', diff });
+              broadcast({
+                type: 'stream_chunk',
+                token: diff ? `\`\`\`diff\n${diff}\n\`\`\`` : 'Workspace sạch (Không có git diff).',
+              });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'test') {
+              broadcast({ type: 'terminal_log', text: '[Test] Running test suites...' });
+              const tools = new Tools(c.workspace, approve);
+              const res = await tools.run('run_tests', '{}', activeAbort.signal);
+              broadcast({ type: 'terminal_log', text: res.output || '' });
+              broadcast({
+                type: 'stream_chunk',
+                token: `**Kết quả kiểm thử:**\n\`\`\`text\n${res.output}\n\`\`\``,
+              });
+              broadcast({ type: 'command_result', command: 'test', ok: res.ok, output: res.output });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'models') {
+              const list = await client.models();
+              broadcast({
+                type: 'stream_chunk',
+                token: `**Danh sách Models khả dụng:**\n- ` + list.join('\n- '),
+              });
+              broadcast({ type: 'command_result', command: 'models', ok: true, output: list.join('\n') });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'model' && arg) {
+              c = { ...c, model: arg };
+              c.modelPool = [{ id: arg, tags: ['coding', 'tools', 'reasoning'], priority: 100 }];
+              c.models = {};
+              client = new ModelClient(c); router = new ModelRouter(c);
+              broadcast({ type: 'stream_chunk', token: `Đã đổi model thành **${arg}**` });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'quality' && ['fast', 'balanced', 'high', 'max'].includes(arg)) {
+              c = { ...c, quality: arg as any };
+              broadcast({ type: 'stream_chunk', token: `Đã đổi quality policy thành **${arg}**` });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'status') {
+              broadcast({
+                type: 'stream_chunk',
+                token: `**Trạng thái hệ thống:**\n- Workspace: \`${c.workspace}\`\n- Model: \`${c.model}\`\n- Quality: \`${c.quality}\`\n- Max Agents: \`${c.maxAgents}\``,
+              });
+              broadcast({ type: 'command_result', command: 'status', ok: true });
+              broadcast({ type: 'stream_end' });
+            } else if (cmd === 'sessions') {
+              const sessions = db.sessions();
+              broadcast({ type: 'sessions', sessions });
+              broadcast({ type: 'stream_chunk', token: `**Đã tải ${sessions.length} phiên làm việc.**` });
+              broadcast({ type: 'stream_end' });
+            } else {
+              broadcast({ type: 'stream_chunk', token: `Lệnh \`/${cmd}\` chưa được hỗ trợ trong Studio.` });
+              broadcast({ type: 'stream_end' });
+            }
+          } else {
+            // General Agent Chat with streaming tokens & thinking
+            assertConfigured(c);
+            const sessionId = typeof msg.sessionId === 'string' && /^chat-[a-zA-Z0-9-]{1,80}$/.test(msg.sessionId) ? msg.sessionId : `chat-${crypto.randomUUID()}`;
+            const memory = db.conversation(sessionId);
+            db.session(sessionId, 'running', c.model, line.slice(0, 100));
+            const saveMessage = (role: string, content: string) => db.db.prepare('INSERT INTO messages(session_id,agent_id,ts,content) VALUES(?,?,?,?)').run(sessionId, role, new Date().toISOString(), content);
+            saveMessage('user', line);
+            const agent = new Agent(
+              'agent-general',
+              'general',
+              c.workspace,
+              client,
+              router,
+              new Tools(c.workspace, approve)
+            );
+
+            let isThinking = false;
+            let fullResponse = '';
+            try {
+            const result = await agent.run(line, activeAbort.signal, (token) => {
+              fullResponse += token;
+              if (token.includes('<think>')) {
+                isThinking = true;
+              }
+              if (isThinking) {
+                broadcast({ type: 'thinking', text: token });
+                if (token.includes('</think>')) {
+                  isThinking = false;
+                }
+              } else {
+                broadcast({ type: 'stream_chunk', token });
+              }
+            }, [], {
+              state: memory,
+              onContext: event => broadcast({ ...event, sessionId }),
+              checkpoint: state => db.saveConversation(sessionId, state),
+              onItem: item => db.archiveItem(sessionId, item)
+            });
+            broadcast({ type: 'memory_summary', sessionId, summary: memory.summary });
+            saveMessage('assistant', fullResponse || result);
+            db.session(sessionId, 'completed', c.model);
+            } catch (error) {
+              if (db.db.open) db.saveConversation(sessionId, memory);
+              if (fullResponse) saveMessage('assistant', fullResponse);
+              db.session(sessionId, activeAbort.signal.aborted ? 'cancelled' : 'failed', c.model);
+              throw error;
+            }
+
+            broadcast({ type: 'stream_end' });
+          }
+          } finally {
+            busy = false; activeAbort = undefined; activeTeam = undefined;
+            broadcast({ type: 'run_end' });
+          }
+        }
+      } catch (err: any) {
+        if (msg.type === 'configure' || msg.type === 'get_conversation') {
+          ws.send(JSON.stringify({ type: 'error', message: err?.message || String(err) }));
+          return;
+        }
+        broadcast({ type: 'stream_chunk', token: `\n\n**Lỗi:** ${err?.message || err}` });
+        broadcast({ type: 'stream_end' });
+      }
+    });
+
+    ws.on('close', () => {
+      clients.delete(ws);
+    });
+  });
+
+  if (openBrowser && !process.env.CI && process.env.NODE_ENV !== 'test') {
+    try {
+      if (process.platform === 'win32') {
+        exec(`cmd.exe /c start "" "${url}"`);
+      } else if (process.platform === 'darwin') {
+        exec(`open "${url}"`);
+      } else {
+        exec(`xdg-open "${url}"`);
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  let isClosed = false;
+  const close = async (): Promise<void> => {
+    if (isClosed) return;
+    isClosed = true;
+    activeAbort?.abort(); activeTeam?.stop();
+
+    for (const [, pending] of pendingApprovals.entries()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    pendingApprovals.clear();
+
+    for (const ws of clients) {
+      try {
+        ws.terminate();
+      } catch {}
+    }
+    clients.clear();
+
+    await new Promise<void>((resolve) => {
+      wss.close(() => resolve());
+    });
+
+    await new Promise<void>((resolve) => {
+      if (!server.listening) {
+        resolve();
+        return;
+      }
+      server.close(() => resolve());
+    });
+    db.close();
+  };
+
+  return {
+    server,
+    wss,
+    port: boundPort,
+    host,
+    url,
+    close,
+    requestApproval,
+  };
+}
+
+// Auto start if executed directly via node or tsx
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('server.ts') || process.argv[1].endsWith('server.js'))
+) {
+  const portArgIndex = process.argv.findIndex((arg) => arg === '--port' || arg === '-p');
+  const portArg = portArgIndex !== -1 ? process.argv[portArgIndex + 1] : undefined;
+  const port = portArg ? parseInt(portArg, 10) : parseInt(process.env.PORT || '3840', 10);
+
+  startStudio({ port })
+    .then((instance) => {
+      console.log(`\n======================================================`);
+      console.log(`🚀 VIBE STUDIO (Codex & Antigravity Style)`);
+      console.log(`🌐 Server running at: ${instance.url}`);
+      console.log(`======================================================\n`);
+
+      const shutdown = async () => {
+        console.log('\nĐang dừng Vibe Studio server...');
+        await instance.close();
+        process.exit(0);
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+    })
+    .catch((e) => {
+      console.error('Lỗi khởi động Vibe Studio:', e);
+      process.exit(1);
+    });
+}

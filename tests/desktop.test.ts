@@ -1,0 +1,85 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { WebSocket } from 'ws';
+import { startStudio, type StudioServerInstance } from '../src/studio/server.js';
+
+const servers: StudioServerInstance[] = [];
+const roots: string[] = [];
+const sockets: WebSocket[] = [];
+afterEach(async () => {
+  sockets.splice(0).forEach(socket => socket.terminate());
+  await Promise.all(servers.splice(0).map(server => server.close()));
+  roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true }));
+});
+async function studio(token?: string) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-desktop-')); roots.push(root);
+  const instance = await startStudio({ port: 0, openBrowser: false, workspace: root, token }); servers.push(instance); return instance;
+}
+function connect(url: string) {
+  const socket = new WebSocket(url.replace('http:', 'ws:')); sockets.push(socket);
+  const messages: any[] = [];
+  socket.on('message', data => messages.push(JSON.parse(String(data))));
+  return { socket, async wait(type: string) {
+    const start = Date.now();
+    while (Date.now() - start < 4000) { const index = messages.findIndex(msg => msg.type === type); if (index >= 0) return messages.splice(index, 1)[0]; await new Promise(resolve => setTimeout(resolve, 10)); }
+    throw new Error(`No ${type} event`);
+  } };
+}
+describe('Desktop backend', () => {
+  it('protects HTML, assets and API with the desktop token', async () => {
+    const server = await studio('private-token');
+    for (const route of ['/', '/app.css', '/app.js', '/api/status']) {
+      expect((await fetch(server.url + route)).status).toBe(401);
+      expect((await fetch(server.url + route + '?token=private-token')).status).toBe(200);
+    }
+  });
+  it('rejects unauthorized websocket upgrades', async () => {
+    const server = await studio('private-token');
+    const socket = new WebSocket(server.url.replace('http:', 'ws:')); sockets.push(socket);
+    const error = await new Promise<Error>(resolve => socket.once('error', resolve));
+    expect(error.message).toContain('401');
+  });
+  it('rejects invalid configuration and redacts configured API keys', async () => {
+    const server = await studio(); const client = connect(server.url); await client.wait('init');
+    client.socket.send(JSON.stringify({ type: 'configure', baseUrl: 'file:///secret', model: 'test', apiKey: 'private-key' }));
+    expect((await client.wait('error')).message).toContain('không hợp lệ');
+    client.socket.send(JSON.stringify({ type: 'configure', baseUrl: 'http://127.0.0.1:1234/v1', model: 'new-model', apiKey: 'private-key' }));
+    const result = await client.wait('configured');
+    expect(result.config.model).toBe('new-model'); expect(result.config.apiKey).toBe('[REDACTED]');
+    expect(result.config.modelPool[0].id).toBe('new-model');
+    expect(JSON.stringify(await (await fetch(server.url + '/api/status')).json())).not.toContain('private-key');
+  });
+  it('persists conversations and sends previous turns to the configured model', async () => {
+    const requests: any[] = [];
+    const model = http.createServer((req, res) => {
+      let body = ''; req.on('data', chunk => body += chunk); req.on('end', () => {
+        requests.push(JSON.parse(body)); res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.end('data: {"choices":[{"delta":{"content":"Hello from model"}}]}\n\ndata: [DONE]\n\n');
+      });
+    });
+    await new Promise<void>(resolve => model.listen(0, '127.0.0.1', resolve));
+    try {
+      const server = await studio(); const client = connect(server.url); await client.wait('init');
+      const port = (model.address() as import('node:net').AddressInfo).port;
+      client.socket.send(JSON.stringify({ type: 'configure', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'test-model', apiKey: 'fake-key' })); await client.wait('configured');
+      for (const prompt of ['First question', 'Follow-up question']) {
+        client.socket.send(JSON.stringify({ type: 'chat', prompt, sessionId: 'chat-test-conversation' })); await client.wait('run_end');
+      }
+      expect(requests[1].model).toBe('test-model');
+      expect(requests[1].messages.map((msg: any) => msg.content)).toContain('First question');
+      expect(requests[1].messages.map((msg: any) => msg.content)).toContain('Hello from model');
+      client.socket.send(JSON.stringify({ type: 'get_conversation', sessionId: 'chat-test-conversation' }));
+      expect((await client.wait('conversation')).messages).toHaveLength(4);
+      const status = await (await fetch(server.url + '/api/status')).json();
+      expect(status.sessions[0].status).toBe('completed');
+    } finally { await new Promise<void>(resolve => model.close(() => resolve())); }
+  });
+  it('stop denies pending approvals', async () => {
+    const server = await studio(); const client = connect(server.url); await client.wait('init');
+    const pending = server.requestApproval('delete important file'); await client.wait('approval_request');
+    client.socket.send(JSON.stringify({ type: 'stop' })); expect(await pending).toBe(false);
+  });
+});

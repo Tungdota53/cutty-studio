@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+.vibe/
+.env
+*.log
+build/
+release/
+.agents/
+.codex/
+vibe_cli_teamwork_prompt.txt
+.env.*
+*.db
+*.db-wal
+*.db-shm
