@@ -39,7 +39,7 @@ async function startHost() {
   const backend = app.isPackaged ? path.join(process.resourcesPath, 'runtime', 'desktop-host.mjs') : path.join(__dirname, '..', 'dist', 'studio', 'desktop-host.js');
   const child = fork(backend, [], {
     execPath: node, cwd: workspace, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    env: { ...process.env, VIBE_WORKSPACE: workspace, VIBE_DESKTOP_TOKEN: token, VIBE_API_KEY: settings.apiKey || process.env.VIBE_API_KEY || '', VIBE_BASE_URL: settings.baseUrl || process.env.VIBE_BASE_URL || '', VIBE_MODEL: settings.model || process.env.VIBE_MODEL || '', VIBE_CONTEXT_WINDOW: String(settings.contextWindow || process.env.VIBE_CONTEXT_WINDOW || ''), VIBE_OUTPUT_TOKENS: String(settings.maxOutputTokens || process.env.VIBE_OUTPUT_TOKENS || ''), PATH: `${app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}` }
+    env: { ...process.env, VIBE_WORKSPACE: workspace, VIBE_DESKTOP_TOKEN: token, VIBE_API_KEY: settings.apiKey || process.env.VIBE_API_KEY || '', VIBE_BASE_URL: settings.baseUrl || process.env.VIBE_BASE_URL || '', VIBE_MODEL: settings.model || process.env.VIBE_MODEL || '', VIBE_CONTEXT_MODE: settings.contextMode || process.env.VIBE_CONTEXT_MODE || 'auto', VIBE_CONTEXT_WINDOW: String(settings.contextWindow || process.env.VIBE_CONTEXT_WINDOW || ''), VIBE_OUTPUT_TOKENS: String(settings.maxOutputTokens || process.env.VIBE_OUTPUT_TOKENS || ''), PATH: `${app.isPackaged ? path.join(process.resourcesPath, 'runtime') : path.dirname(process.execPath)}${path.delimiter}${process.env.PATH || ''}` }
   });
   host = child;
   let log = '';
@@ -78,9 +78,9 @@ else {
       if (!values || typeof values.baseUrl !== 'string' || typeof values.model !== 'string' || typeof values.apiKey !== 'string') throw new Error('Cấu hình không hợp lệ.');
       const url = new URL(values.baseUrl);
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !values.model.trim()) throw new Error('Cấu hình không hợp lệ.');
-      const contextWindow = values.contextWindow ?? 32768, maxOutputTokens = values.maxOutputTokens ?? 4096;
-      if (!Number.isInteger(contextWindow) || contextWindow < 4096 || contextWindow > 2097152 || !Number.isInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > 65536 || maxOutputTokens > contextWindow / 2) throw new Error('Giới hạn context/đầu ra không hợp lệ.');
-      settings = { ...settings, baseUrl: values.baseUrl, model: values.model, apiKey: values.apiKey || settings.apiKey, contextWindow, maxOutputTokens };
+      const contextWindow = values.contextWindow ?? 32768, maxOutputTokens = values.maxOutputTokens ?? 4096, contextMode = values.contextMode ?? 'auto';
+      if (!['auto', 'manual'].includes(contextMode) || !Number.isSafeInteger(contextWindow) || contextWindow < 4096 || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > contextWindow / 2) throw new Error('Giới hạn context/đầu ra không hợp lệ.');
+      settings = { ...settings, baseUrl: values.baseUrl, model: values.model, apiKey: values.apiKey || settings.apiKey, contextMode, contextWindow, maxOutputTokens };
       saveSettings(); return { keySaved: !settings.apiKey || safeStorage.isEncryptionAvailable() };
     });
     try { await startHost(); if (!process.env.VIBE_SMOKE_TEST) win.show(); }

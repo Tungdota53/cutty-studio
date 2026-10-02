@@ -9,6 +9,7 @@ import { loadConfig } from '../src/config.js';
 import { Store } from '../src/db.js';
 import { ModelRouter } from '../src/router.js';
 import type { ModelClient } from '../src/model.js';
+import { ModelStreamInterruptedError } from '../src/model.js';
 import type { Message } from '../src/types.js';
 
 const roots: string[] = [];
@@ -30,6 +31,26 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('keeps an independent branch running after a producer exhausts stream recovery', async () => {
+    const dir = root(); let failedAttempts = 0;
+    const { team } = runner(dir, [
+      { id: 'failed', role: 'coder', title: 'Interrupted producer', description: 'unstable-work', expectedFiles: ['failed.txt'] },
+      { id: 'blocked', role: 'tester', title: 'Needs producer', description: 'blocked-work', dependencies: ['failed'] },
+      { id: 'independent', role: 'coder', title: 'Independent producer', description: 'independent-work', expectedFiles: ['independent.txt'] },
+      { id: 'next', role: 'planner', title: 'Independent consumer', description: 'independent-consumer', dependencies: ['independent'] }
+    ], async messages => {
+      const request = messages.findLast(message => message.role === 'user')?.content;
+      if (request === 'unstable-work') { failedAttempts++; throw new ModelStreamInterruptedError('terminated', '', true); }
+      if (request === 'blocked-work') throw new Error('Dependent must never run');
+      return { content: 'completed independent work', toolCalls: [] };
+    });
+    const result = await team.run('Continue independent work after transient transport failure', () => {});
+    expect(failedAttempts).toBe(3);
+    expect(result.tasks.find(task => task.id === 'failed')?.status).toBe('failed');
+    expect(result.tasks.find(task => task.id === 'blocked')?.status).toBe('blocked');
+    expect(result.tasks.filter(task => ['independent', 'next'].includes(task.id)).every(task => task.status === 'completed')).toBe(true);
+    expect(result.gate.verdict).toBe('FAIL');
+  });
   it('rejects overlapping runs and allows a fresh run after cancellation', async () => {
     const dir=root(); let release!:()=>void, entered!:()=>void;
     const started=new Promise<void>(resolve=>entered=resolve), blocked=new Promise<void>(resolve=>release=resolve);

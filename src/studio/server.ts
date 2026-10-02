@@ -105,7 +105,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let teamworkState: any = null;
   let busy = false;
   const skills = new SkillLibrary(c.workspace);
-  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents, maxAgentIterations: c.maxAgentIterations || 64, maxAgentToolCalls: c.maxAgentToolCalls || 192 });
+  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents, maxAgentIterations: c.maxAgentIterations ?? 0, maxAgentToolCalls: c.maxAgentToolCalls ?? 0 });
   const token = typeof options === 'object' ? options.token : undefined;
 
   const clients = new Set<WebSocket>();
@@ -341,7 +341,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           broadcast({ type: 'team_config', saved: true, ...teamConfig() });
         } else if (msg.type === 'get_models') {
           assertConfigured(c);
-          ws.send(JSON.stringify({ type: 'model_catalog', models: await client.models() }));
+          const capabilities = await client.modelCatalog();
+          ws.send(JSON.stringify({ type: 'model_catalog', models: capabilities.map(item => item.id), capabilities }));
         } else if (msg.type === 'search_skills') {
           ws.send(JSON.stringify({ type: 'skill_results', skills: skills.search(String(msg.query || '')).map(({ file, ...skill }) => skill) }));
         } else if (msg.type === 'stop') {
@@ -356,9 +357,11 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('API URL không hợp lệ.');
           if (typeof msg.model !== 'string' || !msg.model.trim()) throw new Error('Nhập tên model.');
           const model = msg.model.trim();
+          const contextMode = msg.contextMode ?? c.contextMode ?? 'auto';
+          if (!['auto', 'manual'].includes(contextMode)) throw new Error('Chế độ context không hợp lệ.');
           const limits = { contextWindow: msg.contextWindow ?? c.contextWindow, maxOutputTokens: msg.maxOutputTokens ?? c.maxOutputTokens };
           contextLimits(limits);
-          c = { ...c, ...limits, baseUrl: endpoint.toString().replace(/\/$/, ''), apiKey: typeof msg.apiKey === 'string' && msg.apiKey ? msg.apiKey : c.apiKey, model, models: {}, modelPool: [{ id: model, tags: ['coding', 'tools', 'reasoning'], priority: 100, maxContext: limits.contextWindow }] };
+          c = { ...c, ...limits, contextMode, baseUrl: endpoint.toString().replace(/\/$/, ''), apiKey: typeof msg.apiKey === 'string' && msg.apiKey ? msg.apiKey : c.apiKey, model, models: {}, modelPool: [{ id: model, tags: ['coding', 'tools', 'reasoning'], priority: 100, maxContext: contextMode === 'manual' ? limits.contextWindow : undefined }] };
           client = new ModelClient(c); router = new ModelRouter(c);
           ws.send(JSON.stringify({ type: 'configured', config: sanitizeConfig(c) }));
         } else if (msg.type === 'init') {

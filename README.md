@@ -2,6 +2,15 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Context tối đa, phục hồi stream và skill — 0.11.0
+
+- **Context tối đa theo model** đọc metadata từ API, bỏ trần context/đầu ra cứng của app. Nếu API chỉ trả tên model, dùng giới hạn dự phòng do người dùng nhập; vẫn dự phòng token đầu ra và overhead. Chế độ thủ công giữ giới hạn riêng.
+- **0 = không giới hạn** cho lượt suy luận và lượt công cụ; vẫn có nút Dừng và kiểm tra đọc lặp không tiến triển. Giá trị hữu hạn đã lưu được giữ khi nâng cấp; đổi về 0 trong Thiết lập agent để áp dụng.
+- Stream `terminated` hoặc EOF thiếu dấu hoàn tất được tiếp tục trên cùng model, tối đa hai lần phục hồi, giữ checkpoint và kết quả công cụ đã hoàn tất. Tool call dở dang bị loại; lời nhắc phục hồi được tính vào ngân sách. Không tự khôi phục sau người dùng hủy.
+- Nhánh độc lập tiếp tục khi một nhánh lỗi; task phụ thuộc thật vẫn chờ kết quả và gate không được đánh dấu PASS giả.
+- Thêm 10 skill adapter từ Agency Agents, Agent-Reach và Orca, nâng thư viện lên 38 skill, tự chọn theo role/chủ đề. Mỗi gói có commit cố định, MIT LICENSE và checksum. Công cụ `read_public_url` đọc văn bản HTTPS công khai với giới hạn thời gian/dung lượng, xác thực DNS và chuyển hướng. [Nguồn, phạm vi tích hợp và importer](docs/upstream-integrations.md).
+- 328/328 kiểm thử đạt trên 26 tệp, bao gồm stream bị ngắt qua HTTP thật, 205 lượt công cụ hữu ích, context tự động/thủ công, routing và kiểm tra checksum skill. [Cơ chế phục hồi](docs/context-recovery.md).
+
 ## Context và phản hồi công cụ — 0.10.2
 
 - Giữ nguyên các chỉ dẫn ngắn ở giữa hội thoại khi nén; `recall_context` đọc lại bản ghi gốc của chính tác vụ với tìm kiếm và phân trang.

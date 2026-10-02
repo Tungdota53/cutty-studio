@@ -20,9 +20,9 @@ function skill(dir: string, name: string, description: string, body = 'Read the 
   fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n${body}`); return folder;
 }
 describe('Role permissions and skill loading', () => {
-  it('loads 28 GitHub skills with pinned provenance and paginated references', () => {
+  it('loads 38 GitHub skills with pinned provenance and paginated references', () => {
     const lib = new SkillLibrary(root()); const external = lib.list().filter(skill => skill.source === 'github');
-    expect(external).toHaveLength(28);
+    expect(external).toHaveLength(38);
     for (const skill of external) {
       expect(skill.provenance?.integrity).toBe(true);
       expect(['Apache-2.0', 'MIT', 'CC-BY-SA-4.0']).toContain(skill.provenance?.license);

@@ -1,0 +1,22 @@
+{
+  "repository": "Panniantong/Agent-Reach",
+  "commit": "a19a171fa980a0785849596492e0af4db800c82f",
+  "license": "MIT",
+  "path": "agent_reach/channels/base.py",
+  "sourcePaths": [
+    "agent_reach/channels/base.py",
+    "agent_reach/doctor.py",
+    "agent_reach/channels/web.py",
+    "agent_reach/channels/github.py"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/Panniantong/Agent-Reach/blob/a19a171fa980a0785849596492e0af4db800c82f/agent_reach/channels/base.py",
+  "files": {
+    "LICENSE.txt": "e94c131ac1c2f78cfd8f7e69da354c0ff58e4e54071697703d56856c036de402",
+    "references/source-1.py": "5eaa803fd593acb7bee8bb29ef33ef373f101ea1e346bc0a9a3b304efd2073c0",
+    "references/source-2.py": "84bb212880e138eb404576162dffd4f2ced442d60a75694ed272e2fa750db851",
+    "references/source-3.py": "d59271dcf9e2ab94f7ae927f0c1a13e9c4308b116de13e1a617a0c4582a7b8e3",
+    "references/source-4.py": "442cc56755a4fa60ad6c8fad59ce4b703f1233a8bec3d2d19fb12ddd2a2f9d6f",
+    "SKILL.md": "1369debbf45ef66d66ee453b1f1a58590b65995d6a3827952257a90853d8cb9e"
+  }
+}

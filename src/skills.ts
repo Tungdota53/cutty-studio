@@ -9,7 +9,7 @@ import { safePath, isSensitivePath } from './security.js';
 import crypto from 'node:crypto';
 import { recommendationScore, skillRoutes } from './skill-routing.js';
 
-export interface Skill { id: string; name: string; description: string; source: string; file: string; recommendedRoles?: Role[]; requires?: string[]; provenance?: { repository: string; commit: string; license: string; url: string; integrity: boolean } }
+export interface Skill { id: string; name: string; description: string; source: string; file: string; recommendedRoles?: Role[]; requires?: string[]; provenance?: { repository: string; commit: string; license: string; url: string; integrity: boolean; adaptation?: string; sourcePaths?: string[] } }
 // Bundled builds place the same assets next to desktop-host.mjs.
 const bundled = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skills');
 export class SkillLibrary {
@@ -37,7 +37,7 @@ export class SkillLibrary {
                 if (source === 'github') {
                   const manifest = JSON.parse(fs.readFileSync(path.join(folder, '.provenance.json'), 'utf8'));
                   const integrity = Boolean(manifest.files?.['SKILL.md'] && manifest.files?.['LICENSE.txt']) && Object.entries(manifest.files as Record<string, string>).every(([name, expected]) => crypto.createHash('sha256').update(fs.readFileSync(safePath(folder, name))).digest('hex') === expected);
-                  provenance = { repository: manifest.repository, commit: manifest.commit, license: manifest.license, url: manifest.url, integrity };
+                  provenance = { repository: manifest.repository, commit: manifest.commit, license: manifest.license, url: manifest.url, integrity, ...(typeof manifest.adaptation === 'string' ? { adaptation: manifest.adaptation } : {}), ...(Array.isArray(manifest.sourcePaths) && manifest.sourcePaths.every((item: unknown) => typeof item === 'string') ? { sourcePaths: manifest.sourcePaths } : {}) };
                 }
                 const id = `${source}:${path.relative(root, folder).split(path.sep).join('/')}`;
                 result.push({ id, name: field('name') || item.name, description: (field('description') || '').slice(0, 1200), source, file, provenance, recommendedRoles: skillRoutes[id]?.roles, requires: skillRoutes[id]?.requires });

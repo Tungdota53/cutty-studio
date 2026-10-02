@@ -29,6 +29,18 @@ function connect(url: string) {
   } };
 }
 describe('Desktop backend', () => {
+  it('round-trips unlimited budgets and provider context mode through configuration', async () => {
+    const server = await studio(); const client = connect(server.url); await client.wait('init');
+    client.socket.send(JSON.stringify({ type: 'configure_team', maxAgentIterations: 0, maxAgentToolCalls: 0 }));
+    const team = await client.wait('team_config');
+    expect(team.maxAgentIterations).toBe(0); expect(team.maxAgentToolCalls).toBe(0);
+    const saved = JSON.parse(fs.readFileSync(path.join(roots.at(-1)!, '.vibe', 'config.json'), 'utf8'));
+    expect(saved.maxAgentIterations).toBe(0); expect(saved.maxAgentToolCalls).toBe(0);
+    client.socket.send(JSON.stringify({ type: 'configure', baseUrl: 'http://127.0.0.1:1234/v1', model: 'huge-window', apiKey: '', contextMode: 'auto', contextWindow: 4_194_304, maxOutputTokens: 131_072 }));
+    const configured = await client.wait('configured');
+    expect(configured.config).toMatchObject({ contextMode: 'auto', contextWindow: 4_194_304, maxOutputTokens: 131_072 });
+    expect(configured.config.modelPool[0].maxContext).toBeUndefined();
+  });
   it('persists role profiles without credentials and rejects invalid assignments', async () => {
     const server = await studio(); const client = connect(server.url); await client.wait('init');
     client.socket.send(JSON.stringify({ type: 'get_team' }));
@@ -70,6 +82,7 @@ describe('Desktop backend', () => {
   it('persists conversations and sends previous turns to the configured model', async () => {
     const requests: any[] = [];
     const model = http.createServer((req, res) => {
+      if (req.url === '/v1/models') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'model-alpha', context_length: 65536 }, { id: 'model-beta', context_length: 65536 }] })); return; }
       let body = ''; req.on('data', chunk => body += chunk); req.on('end', () => {
         requests.push(JSON.parse(body)); res.writeHead(200, { 'Content-Type': 'text/event-stream' });
         res.end('data: {"choices":[{"delta":{"content":"Hello from model"}}]}\n\ndata: [DONE]\n\n');

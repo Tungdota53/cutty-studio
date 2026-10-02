@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "engineering/engineering-code-reviewer.md",
+  "sourcePaths": [
+    "engineering/engineering-code-reviewer.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/engineering/engineering-code-reviewer.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "7509fcc3ea1dda46511b2801996305bf3d4a125576f9655ff0b63df25602f446",
+    "SKILL.md": "add3176af1a151b61c6f8942f23e8fff326bfe95493992ddd70d52617911f98e"
+  }
+}

@@ -1,5 +1,15 @@
 # Context recovery — 0.10.1
 
+## Provider limits and interrupted-stream recovery in 0.11.0
+
+Automatic context uses numeric capabilities published by `/models`, with shared discovery across concurrent agents. Unknown capabilities retain the explicit fallback setting; model names do not establish capacity. Manual mode caps the configured window by a known provider limit. Provider output limits also cap requests. The app no longer imposes its previous 2M context or 65K output ceilings; output and safety overhead still reserve part of the window.
+
+Reasoning and tool budgets accept zero for unlimited useful rounds. Explicit finite budgets remain configurable. Cancellation and the repeated-unchanged-read guard remain active.
+
+Transport interruption retains partial text in the checkpoint and discards incomplete tool fragments. The agent continues on the same model with at most two recovery attempts. It includes completed tool results and instructions against replaying writes, counts recovery instructions in the input budget, and removes overlapping response text. Recovery is continuation, not a transactional guarantee against a model issuing a new duplicate command. Invalid completed tool JSON and length/content-filter finishes still fail safely. Cancellation never triggers recovery.
+
+Scheduler regressions confirm independent branches continue after a producer exhausts recovery. Tasks needing that producer's output stay blocked; failed evidence does not become PASS. Local HTTP socket termination, provider-sized context, manual caps and runs beyond 200 rounds are covered by tests. These tests do not establish compatibility with every live provider.
+
 ## Hardening in 0.10.2
 
 - Preserve short historical user turns (up to 512 estimated serialized tokens each) verbatim through repeated compaction. Longer historical user excerpts precede bulky tool records; their omissions remain explicit. Protected turns that alone exceed the budget are rejected without deleting them.

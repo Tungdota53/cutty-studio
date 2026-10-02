@@ -1,0 +1,18 @@
+{
+  "repository": "stablyai/orca",
+  "commit": "1fc24d311481a85d5b4ae596898ee072389f040c",
+  "license": "MIT",
+  "path": "skills/orchestration/SKILL.md",
+  "sourcePaths": [
+    "skills/orchestration/SKILL.md",
+    "docs/reference/sharing-agent-skills.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/stablyai/orca/blob/1fc24d311481a85d5b4ae596898ee072389f040c/skills/orchestration/SKILL.md",
+  "files": {
+    "LICENSE.txt": "ff1b611f80580d49f4b97e93a97b24eb050b0671b26b8afe16341fab699112f3",
+    "references/source-1.md": "cd1b364bf35781bad06bf75ab1766afa8d6cec69cb2060529691d89871a2098a",
+    "references/source-2.md": "c779eeff6b06be3519e4025c3168f11c7797709f7a2fc4f0f1e6ed774962c692",
+    "SKILL.md": "724d28a00ff08af48cbe303e2308ac71663fd592381d5621fd32a64f67c4f662"
+  }
+}

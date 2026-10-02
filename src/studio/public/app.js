@@ -4,6 +4,7 @@ const credential = new URLSearchParams(location.search).get('token');
 let ws, config, busy = false, currentSession = null, assistant = null, response = '', reconnectTimer, toastTimer;
 let pendingSettings = null;
 let currentContext = null;
+let modelCapabilities = [];
 let teamData = null, skillSearchTimer;
 const liveAgents = new Map();
 const approvalQueue = [];
@@ -23,6 +24,7 @@ function setBusy(value) {
   $('run-text').textContent = 'Đang xử lý…';
 }
 function configure(next) {
+  if (config && (config.baseUrl !== next.baseUrl || config.model !== next.model)) modelCapabilities = [];
   config = next;
   if (teamData) TeamMap.configure(teamData, next.model);
   const parts = next.workspace.split(/[\\/]/).filter(Boolean);
@@ -30,10 +32,18 @@ function configure(next) {
   $('workspace-path').textContent = next.workspace; $('workspace-button').title = next.workspace;
   $('model-name').textContent = next.model;
   $('base-url').value = next.baseUrl; $('model-input').value = next.model;
+  $('context-mode').value = next.contextMode || 'auto';
   $('context-window').value = next.contextWindow || 32768; $('output-tokens').value = next.maxOutputTokens || 4096;
+  showContextCapability();
   if (!currentContext) showContext(null);
   $('api-key').placeholder = next.apiKey ? 'Đã có khóa · để trống để giữ nguyên' : 'Nhập khóa API';
   $('key-note').textContent = window.desktop ? 'Khóa được mã hóa bằng Windows và lưu trên máy của bạn.' : 'Khóa chỉ được giữ trong phiên backend hiện tại.';
+}
+function showContextCapability() {
+  const model = $('model-input').value.trim();
+  const capacity = modelCapabilities.find(item => item.id === model);
+  const auto = $('context-mode').value === 'auto';
+  $('context-capability-note').textContent = auto ? capacity?.contextWindow ? 'API công bố ' + formatTokens(capacity.contextWindow) + ' token; app dùng tối đa cửa sổ này cho model ' + model + '.' : 'API chưa cung cấp giới hạn context. App dùng số dự phòng đã nhập cho đến khi có metadata; số này cần khớp tài liệu nhà cung cấp.' : 'Dùng số context thủ công, không vượt khả năng thực tế của model. Đầu ra tối đa một nửa context.';
 }
 const formatTokens = number => new Intl.NumberFormat('vi-VN').format(number || 0);
 function showContext(stats, summary) {
@@ -148,7 +158,7 @@ function connect() {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     switch (msg.type) {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
-      case 'model_catalog': $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
+      case 'model_catalog': modelCapabilities = msg.capabilities || []; showContextCapability(); $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
       case 'skill_results': showSkills(msg.skills || []); break;
       case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); TeamMap.restore(msg.teamworkState); send({ type: 'get_team' }); break;
       case 'configured':
@@ -215,7 +225,7 @@ function openSettings() { $('settings-status').textContent = ''; $('settings-dia
 $('settings-button').onclick = openSettings; $('model-button').onclick = openSettings;
 $('settings-form').onsubmit = event => {
   event.preventDefault(); if (busy) { $('settings-status').textContent = 'Hãy dừng tác vụ trước khi đổi kết nối.'; return; }
-  pendingSettings = { baseUrl: $('base-url').value.trim(), model: $('model-input').value.trim(), apiKey: $('api-key').value.trim(), contextWindow: Number($('context-window').value), maxOutputTokens: Number($('output-tokens').value) };
+  pendingSettings = { baseUrl: $('base-url').value.trim(), model: $('model-input').value.trim(), apiKey: $('api-key').value.trim(), contextMode: $('context-mode').value, contextWindow: Number($('context-window').value), maxOutputTokens: Number($('output-tokens').value) };
   if (!send({ type: 'configure', ...pendingSettings })) pendingSettings = null;
 };
 for (const button of document.querySelectorAll('[data-close]')) button.onclick = () => $(button.dataset.close).close();
@@ -250,7 +260,7 @@ function showSkills(skills) {
 }
 function showTeam(data) {
   TeamMap.configure(data, config?.model);
-  teamData = data; $('team-max').value = data.maxAgents; $('agent-iterations').value = data.maxAgentIterations || 64; $('agent-tools').value = data.maxAgentToolCalls || 192;
+  teamData = data; $('team-max').value = data.maxAgents; $('agent-iterations').value = data.maxAgentIterations ?? 0; $('agent-tools').value = data.maxAgentToolCalls ?? 0;
   showNamedAgents(data);
   const previousRole = $('role-picker').value || 'coder';
   $('role-picker').replaceChildren();
@@ -349,5 +359,6 @@ $('add-agent').onclick = () => { if (!teamData || busy) return; const card = nam
     $('team-status').textContent = 'Đã thêm agent chuyên môn còn thiếu. Chọn model rồi lưu phân vai.';
   };
 $('fetch-models').onclick = () => send({ type: 'get_models' });
+$('context-mode').onchange = showContextCapability;
+$('model-input').oninput = showContextCapability;
 connect();
-

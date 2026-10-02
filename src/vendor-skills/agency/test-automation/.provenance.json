@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "testing/testing-test-automation-engineer.md",
+  "sourcePaths": [
+    "testing/testing-test-automation-engineer.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/testing/testing-test-automation-engineer.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "4299d038e88387546d645ccbe767b1dfdb7de10da55eba1ab103149972cd2b9b",
+    "SKILL.md": "6b2c91f01e80618f0d7ed46bbb10215110f17ed9fd0a34497f9960d22718e70b"
+  }
+}

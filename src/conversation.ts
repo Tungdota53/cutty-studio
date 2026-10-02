@@ -31,7 +31,7 @@ export function contextExcerpt(text: string, budget: number): string {
 }
 export function contextLimits(c: Pick<Config, 'contextWindow' | 'maxOutputTokens'>) {
   const window = c.contextWindow ?? 32768, output = c.maxOutputTokens ?? 4096;
-  if (!Number.isInteger(window) || window < 4096 || window > 2097152 || !Number.isInteger(output) || output < 128 || output > 65536 || output > window / 2) throw new Error('Context phải từ 4.096 đến 2.097.152 token; đầu ra từ 128 đến 65.536 và không vượt một nửa context.');
+  if (!Number.isSafeInteger(window) || window < 4096 || !Number.isSafeInteger(output) || output < 128 || output > window / 2) throw new Error('Context phải là số nguyên an toàn từ 4.096 token; đầu ra từ 128 và không vượt một nửa context. Dùng giới hạn thực tế của nhà cung cấp.');
   return { window, output, inputBudget: window - output - Math.max(128, Math.ceil(window * 0.03)) };
 }
 export function newConversation(messages: Message[] = []): ConversationState {

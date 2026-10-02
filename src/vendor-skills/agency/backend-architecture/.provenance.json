@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "engineering/engineering-backend-architect.md",
+  "sourcePaths": [
+    "engineering/engineering-backend-architect.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/engineering/engineering-backend-architect.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "18f237d054fa91f72a5dcda46a52ddcf7354ea3a3e39e0247629f4ea0f446917",
+    "SKILL.md": "2d78bc4ed4212a0e86b554e457053760b73dab5eae4f1af6d9ac8a623c9bad08"
+  }
+}

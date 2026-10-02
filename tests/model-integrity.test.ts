@@ -32,7 +32,7 @@ describe('Model response integrity', () => {
     expect(tokens).toEqual(['Partial']); expect(c.requests()).toBe(1);
   });
   it.each(['{"path":"app.js",', 'null', '[]'])('refuses malformed tool arguments %s before execution', async args => {
-    const c = await client(() => event({ tool_calls: [{ index: 0, id: 'call', function: { name: 'write_file', arguments: args } }] }));
+    const c = await client(() => event({ tool_calls: [{ index: 0, id: 'call', function: { name: 'write_file', arguments: args } }] }, 'tool_calls'));
     await expect(c.model.chat([], [])).rejects.toThrow('API stream'); expect(c.requests()).toBe(1);
   });
   it('refuses a whole batch when tool IDs collide', async () => {

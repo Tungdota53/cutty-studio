@@ -28,7 +28,17 @@ export const skillRoutes: Record<string, { roles: Role[]; topics: string[]; requ
   'github:trailofbits/harness-writing': { roles: ['coder', 'tester'], topics: ['fuzz', 'harness'], requires: ['Project fuzzing toolchain'] },
   'github:uiux/ui-ux-pro-max': { roles: ['coder', 'reviewer'], topics: ['ux', 'ui', 'giao diện', 'accessibility', 'responsive', 'thiết kế'], requires: ['Python 3 for optional data search'] },
   'github:uiux/ui-styling': { roles: ['coder'], topics: ['tailwind', 'shadcn', 'styling', 'css'] },
-  'github:uiux/design-system': { roles: ['coder', 'reviewer'], topics: ['design system', 'design tokens', 'hệ thống thiết kế', 'typography'] }
+  'github:uiux/design-system': { roles: ['coder', 'reviewer'], topics: ['design system', 'design tokens', 'hệ thống thiết kế', 'typography'] },
+  'github:agency/frontend-engineering': { roles: ['coder'], topics: ['frontend', 'component', 'accessibility', 'keyboard', 'state management', 'responsive', 'animation'] },
+  'github:agency/backend-architecture': { roles: ['planner', 'coder'], topics: ['backend', 'api contract', 'transaction', 'idempotency', 'database', 'persistence'] },
+  'github:agency/ux-architecture': { roles: ['planner', 'coder', 'reviewer'], topics: ['user journey', 'navigation', 'ux architecture', 'information architecture', 'reduced motion', 'luồng người dùng'] },
+  'github:agency/application-security': { roles: ['coder', 'reviewer'], topics: ['appsec', 'ssrf', 'authorization', 'path traversal', 'credential exposure', 'prompt injection'] },
+  'github:agency/test-automation': { roles: ['tester'], topics: ['test automation', 'flaky', 'fixture', 'deterministic', 'integration', 'kiểm thử tự động'] },
+  'github:agency/verification-evidence': { roles: ['tester', 'judge'], topics: ['acceptance evidence', 'exit status', 'unverified', 'verification evidence', 'bằng chứng nghiệm thu'] },
+  'github:agency/multi-agent-architecture': { roles: ['orchestrator', 'planner'], topics: ['multi-agent', 'parallel', 'fan-out', 'orchestration', 'context budget', 'đa luồng', 'teamwork'] },
+  'github:agency/code-review': { roles: ['reviewer'], topics: ['source diff', 'correctness regression', 'review finding', 'code review', 'rà soát mã'] },
+  'github:agent-reach/public-web-research': { roles: ['general', 'planner', 'reviewer'], topics: ['public web', 'internet', 'web research', 'github source', 'nghiên cứu tài liệu', 'nguồn công khai'], requires: ['Vibe read_public_url or another available public-source tool'] },
+  'github:orca/isolated-agent-workflows': { roles: ['orchestrator', 'planner'], topics: ['worktree', 'isolated workspace', 'task dag', 'worker completion', 'skill provenance', 'cô lập workspace'] }
 };
 
 export function recommendationScore(id: string, role: Role, task: string) {

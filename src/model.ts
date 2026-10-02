@@ -2,14 +2,47 @@ import type { Config } from './config.js';
 import type { Message, TokenUsage, ToolCall } from './types.js';
 export interface ChatResult { content: string; toolCalls: ToolCall[]; usage?: TokenUsage; model: string }
 export interface ChatOptions { maxOutputTokens?: number; timeoutMs?: number; retryAttempts?: number }
+export interface ModelCapabilities { id: string; contextWindow?: number; maxOutputTokens?: number }
 export class ModelResponseError extends Error {
   constructor(message: string, public readonly partialOutput: boolean, options?: ErrorOptions) { super(message, options); this.name = 'ModelResponseError'; }
+}
+/** A transport interruption is recoverable; incomplete tool calls never leave the client. */
+export class ModelStreamInterruptedError extends ModelResponseError {
+  constructor(message: string, public readonly partialContent: string, public readonly hadToolFragments: boolean, options?: ErrorOptions) {
+    super(message, !!partialContent || hadToolFragments, options); this.name = 'ModelStreamInterruptedError';
+  }
 }
 
 export class ModelClient {
   private usageSupported = true;
+  private catalog?: ModelCapabilities[];
+  private catalogRequest?: Promise<ModelCapabilities[]>;
   constructor(private c: Config) {}
   get config() { return this.c; }
+  async modelCatalog(): Promise<ModelCapabilities[]> {
+    if (this.catalogRequest) return this.catalogRequest;
+    this.catalogRequest = (async () => {
+      const response = await fetch(`${this.c.baseUrl}/models`, { headers: { Authorization: `Bearer ${this.c.apiKey}` }, signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error(`Models HTTP ${response.status}`);
+      const json = await response.json() as { data?: unknown[] };
+      if (!Array.isArray(json.data)) throw new Error('Danh mục model không hợp lệ');
+      const integer = (...values: unknown[]) => values.find(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0) as number | undefined;
+      this.catalog = json.data.flatMap(value => {
+        if (!value || typeof value !== 'object') return [];
+        const item = value as Record<string, any>;
+        if (typeof item.id !== 'string' || !item.id.trim()) return [];
+        return [{ id: item.id, contextWindow: integer(item.context_length, item.context_window, item.max_context_length, item.max_input_tokens, item.top_provider?.context_length), maxOutputTokens: integer(item.max_output_tokens, item.max_completion_tokens, item.top_provider?.max_completion_tokens) }];
+      });
+      return this.catalog;
+    })();
+    try { return await this.catalogRequest; } finally { this.catalogRequest = undefined; }
+  }
+  async modelLimits(model: string) {
+    // A provider may expose IDs only. Unknown limits remain explicit; do not
+    // invent a context window from a model name or claim infinite capacity.
+    if (!this.catalog) { try { await this.modelCatalog(); } catch { this.catalog = []; } }
+    return this.catalog!.find(item => item.id === model);
+  }
   async models() {
     const response = await fetch(`${this.c.baseUrl}/models`, { headers: { Authorization: `Bearer ${this.c.apiKey}` }, signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`Models HTTP ${response.status}`);
@@ -41,12 +74,12 @@ export class ModelClient {
         if (!response.body) throw new Error('Response không có stream');
         const reader = response.body.getReader(), decoder = new TextDecoder();
         let buffer = '', content = '';
-        let finishReason: string | null = null;
+        let finishReason: string | null = null, doneMarker = false;
         let usage: TokenUsage | undefined;
         const calls = new Map<number, ToolCall>();
         function consume(line: string) {
           if (!line.startsWith('data:')) return;
-          const data = line.slice(5).trim(); if (!data || data === '[DONE]') return;
+          const data = line.slice(5).trim(); if (data === '[DONE]') { doneMarker = true; return; } if (!data) return;
           let json: any; try { json = JSON.parse(data); } catch { return; }
           if (json.error) throw new Error('API stream: ' + (json.error.message || 'unknown error'));
           if (json.usage && Number.isFinite(json.usage.prompt_tokens) && Number.isFinite(json.usage.completion_tokens)) {
@@ -70,6 +103,10 @@ export class ModelClient {
             for (const line of lines) consume(line);
           }
           buffer += decoder.decode(); if (buffer.trim()) consume(buffer);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (/API stream/i.test(String(error))) throw error;
+          throw new ModelStreamInterruptedError(`Luồng model bị ngắt: ${error instanceof Error ? error.message : String(error)}`, content, calls.size > 0, { cause: error });
         } finally { reader.releaseLock(); }
         if (finishReason === 'length' || finishReason === 'content_filter') throw new Error(`API stream: phản hồi chưa hoàn tất (${finishReason}); không thực thi tool hoặc coi đây là kết quả hoàn thành.`);
         const toolCalls = [...calls.values()];
@@ -78,13 +115,18 @@ export class ModelClient {
           if (!call.id || ids.has(call.id) || !call.function.name) throw new Error('API stream: tool-call thiếu hoặc trùng ID/tên; không thực thi lượt công cụ này.');
           ids.add(call.id);
           let args: unknown;
-          try { args = JSON.parse(call.function.arguments); } catch { throw new Error('API stream: JSON tham số công cụ bị cắt hoặc không hợp lệ; không thực thi lượt công cụ này.'); }
+          try { args = JSON.parse(call.function.arguments); } catch {
+            if (!finishReason && !doneMarker) throw new ModelStreamInterruptedError('API stream: JSON công cụ bị cắt do luồng thiếu dấu hoàn tất; chưa thực thi.', content, true);
+            throw new Error('API stream: JSON tham số công cụ bị cắt hoặc không hợp lệ; không thực thi lượt công cụ này.');
+          }
           if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('API stream: tham số công cụ phải là JSON object.');
         }
         if (!content.trim() && !toolCalls.length) throw new Error('Model trả phản hồi rỗng; tác vụ chưa hoàn thành.');
+        if (!finishReason && !doneMarker) throw new ModelStreamInterruptedError('Luồng model kết thúc thiếu dấu hoàn tất; chưa thực thi công cụ.', content, calls.size > 0);
         return { content, toolCalls, usage, model };
       } catch (error) {
         last = error; signal?.throwIfAborted();
+        if (error instanceof ModelStreamInterruptedError && error.partialOutput) throw error;
         // Replaying after visible output could duplicate text or tool actions.
         if (emitted) throw new ModelResponseError(error instanceof Error ? error.message : String(error), true, { cause: error });
         if (/Xác thực|API HTTP|API stream/i.test(String(error))) throw error;

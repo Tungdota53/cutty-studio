@@ -1,6 +1,6 @@
 import type { Role, Message, TokenUsage } from './types.js';
 import { createHash } from 'node:crypto';
-import { ModelClient, ModelResponseError } from './model.js';
+import { ModelClient, ModelResponseError, ModelStreamInterruptedError } from './model.js';
 import { ModelRouter } from './router.js';
 import { Tools, toolDefinitions } from './tools.js';
 import { SkillLibrary, type Skill } from './skills.js';
@@ -13,6 +13,25 @@ import type { EventLog } from './events.js';
 import { ConversationContext, newConversation, estimateMessages, estimateTokens, type ConversationState, type ContextEvent } from './conversation.js';
 
 const hasPartialOutput = (error: unknown) => error instanceof ModelResponseError && error.partialOutput;
+function continuationTail(prefix: string, text: string) {
+  if (text.startsWith(prefix)) return text.slice(prefix.length);
+  // KMP overlap detection remains linear for large streamed responses.
+  const size = Math.min(prefix.length, text.length);
+  if (size < 16) return text;
+  const pattern = text.slice(0, size), failure = new Uint32Array(size);
+  for (let i = 1, matched = 0; i < size; i++) {
+    while (matched && pattern[i] !== pattern[matched]) matched = failure[matched - 1];
+    if (pattern[i] === pattern[matched]) matched++;
+    failure[i] = matched;
+  }
+  let overlap = 0;
+  for (const character of prefix.slice(-size).split('')) {
+    while (overlap && (overlap === size || pattern[overlap] !== character)) overlap = failure[overlap - 1];
+    if (pattern[overlap] === character) overlap++;
+  }
+  if (overlap >= 16) return text.slice(overlap);
+  return text;
+}
 
 export interface AgentMemoryOptions {
   state?: ConversationState;
@@ -54,13 +73,13 @@ export class Agent {
     let system = skillSystem();
     const user: Message = { role: 'user', content: task };
     state.messages.push(user); memoryOptions.onItem?.(user);
-    const maxIterations = Math.max(8, Math.min(200, config.maxAgentIterations || 64));
-    const maxTools = Math.max(16, Math.min(2000, config.maxAgentToolCalls || 192));
+    const maxIterations = config.maxAgentIterations && config.maxAgentIterations > 0 ? config.maxAgentIterations : Infinity;
+    const maxTools = config.maxAgentToolCalls && config.maxAgentToolCalls > 0 ? config.maxAgentToolCalls : Infinity;
     let previousRead = '', repeatedReads = 0;
     for (let iteration = 0, toolCount = 0; iteration < maxIterations; iteration++) {
       signal?.throwIfAborted();
       const decision = this.router.route({ role: this.role, agentId: assigned?.id, taskType: 'coding', complexity: 5, contextTokens: context.stats(system, definitions).estimatedInput, requiresTools: true, requiresLongContext: false, preferQuality: ['reviewer', 'planner'].includes(this.role) }, config);
-      let result, error: unknown, visibleOutput = false;
+      let result, error: unknown, visibleOutput = false, recoveredPrefix = '', visiblePrefixLength = 0;
       const models = [decision.selectedModel, ...decision.fallbacks];
       for (const model of models) {
         signal?.throwIfAborted();
@@ -68,9 +87,11 @@ export class Agent {
         const started = Date.now();
         try {
           const modelLimit = config.modelPool?.find(candidate => candidate.id === model)?.maxContext;
+          const capabilities = await this.client.modelLimits?.(model);
           const configuredWindow = config.contextWindow ?? 32768;
-          const window = Number.isInteger(modelLimit) && modelLimit! >= 4096 ? Math.min(configuredWindow, modelLimit!) : configuredWindow;
-          const output = Math.min(config.maxOutputTokens ?? 4096, Math.floor(window / 2));
+          const providerWindow = capabilities?.contextWindow ?? modelLimit;
+          const window = Number.isInteger(providerWindow) && providerWindow! >= 4096 ? (config.contextMode === 'manual' ? Math.min(configuredWindow, providerWindow!) : providerWindow!) : configuredWindow;
+          const output = Math.min(config.maxOutputTokens ?? 4096, capabilities?.maxOutputTokens ?? Infinity, Math.floor(window / 2));
           if (context.limits.window !== window || context.limits.output !== output) {
             context = new ConversationContext({ contextWindow: window, maxOutputTokens: output }, state, memoryOptions.onContext, memoryOptions.checkpoint);
           }
@@ -78,7 +99,35 @@ export class Agent {
           await context.prepare(system, definitions, this.client, model, signal);
           let messages = context.requestMessages(system);
           this.log?.emit('model_route', { agentId: this.id, model, reason: decision.reason });
-          const chat = () => this.client.chat(messages, definitions, model, signal, token => { visibleOutput = true; onToken?.(token); }, { maxOutputTokens: context.limits.output });
+          const chat = async () => {
+            for (let recovery = 0; ; recovery++) {
+              try {
+                const reply = await this.client.chat(messages, definitions, model, signal, recovery ? undefined : token => { visibleOutput = true; onToken?.(token); }, { maxOutputTokens: context.limits.output });
+                if (recovery) {
+                  reply.content = continuationTail(recoveredPrefix, reply.content);
+                  const pendingText = recoveredPrefix.slice(visiblePrefixLength) + reply.content;
+                  if (pendingText) { visibleOutput = true; onToken?.(pendingText); }
+                }
+                return reply;
+              } catch (interruption) {
+                signal?.throwIfAborted();
+                if (!(interruption instanceof ModelStreamInterruptedError)) throw interruption;
+                const tail = continuationTail(recoveredPrefix, interruption.partialContent);
+                if (tail) {
+                  recoveredPrefix += tail;
+                  const partial: Message = { role: 'assistant', content: tail };
+                  state.messages.push(partial); memoryOptions.onItem?.(partial);
+                }
+                if (recovery === 0) visiblePrefixLength = recoveredPrefix.length;
+                context.publish(system, definitions);
+                if (recovery >= 2) throw interruption;
+                this.log?.emit('model_stream_recovery', { agentId: this.id, model, attempt: recovery + 1, discardedToolFragments: interruption.hadToolFragments });
+                const recoverySystem = system + '\nThe previous response was interrupted by transport. Continue the unfinished task from the recorded partial response; do not repeat text. No tool calls from that interrupted response were executed. Previously recorded tool results remain completed; inspect them and do not replay writes or commands. Reconstruct any unfinished tool call with complete valid arguments if still needed. Do not claim completion without evidence.';
+                await context.prepare(recoverySystem, definitions, this.client, model, signal);
+                messages = context.requestMessages(recoverySystem);
+              }
+            }
+          };
           try { result = await chat(); } catch (error) {
             if (visibleOutput || hasPartialOutput(error) || !/context_length_exceeded|maximum context length|context window|too many tokens|prompt is too long/i.test(String(error))) throw error;
             const before = estimateMessages(messages, definitions);
@@ -104,7 +153,7 @@ export class Agent {
       if (!result) throw error;
       const answer: Message = { role: 'assistant', content: result.content, ...(result.toolCalls.length ? { tool_calls: result.toolCalls } : {}) };
       memoryOptions.onItem?.(answer);
-      if (result.toolCalls.length === 0) { state.messages.push(answer); context.publish(system, definitions); return result.content; }
+      if (result.toolCalls.length === 0) { state.messages.push(answer); context.publish(system, definitions); return recoveredPrefix + result.content; }
       // Reject an oversized batch before executing any side effects. Otherwise a
       // budget failure midway through a batch loses the completed tool outcomes.
       if (toolCount + result.toolCalls.length > maxTools) {

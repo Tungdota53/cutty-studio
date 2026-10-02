@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "security/security-appsec-engineer.md",
+  "sourcePaths": [
+    "security/security-appsec-engineer.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/security/security-appsec-engineer.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "8e9c08e47201c14701731b0834deb6ab512ad6273bda3ce1e105cbfb68a7cf2a",
+    "SKILL.md": "41bc0563c431415064f756a202d34a074f14e7acd6bdee3fc01d7a62531ca8b6"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "engineering/engineering-multi-agent-systems-architect.md",
+  "sourcePaths": [
+    "engineering/engineering-multi-agent-systems-architect.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/engineering/engineering-multi-agent-systems-architect.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "d93dd20fef67bf85a537ba0f869fad1a17d0e589f20899d1bbe1f095a7bcb91b",
+    "SKILL.md": "64d8594339b99fcf5579d662b56b8f8715732ca0140d29d853806e8006d39e30"
+  }
+}

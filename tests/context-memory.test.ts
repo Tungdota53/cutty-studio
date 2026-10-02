@@ -113,7 +113,7 @@ async function modelServer(handler: http.RequestListener) {
 describe('Stream usage and output limits', () => {
   it('reads actual input/output/cache usage including an EOF event without a newline', async () => {
     let request: any;
-    const url = await modelServer((req, res) => { let body = ''; req.on('data', data => body += data); req.on('end', () => { request = JSON.parse(body); res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":321,"completion_tokens":18,"total_tokens":339,"prompt_tokens_details":{"cached_tokens":200}}}'); }); });
+    const url = await modelServer((req, res) => { let body = ''; req.on('data', data => body += data); req.on('end', () => { request = JSON.parse(body); res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":321,"completion_tokens":18,"total_tokens":339,"prompt_tokens_details":{"cached_tokens":200}}}'); }); });
     const c = { ...config(), baseUrl: url, apiKey: 'fake-key' };
     const result = await new ModelClient(c).chat([{ role: 'user', content: 'hello' }], [], c.model, undefined, undefined, { maxOutputTokens: 512 });
     expect(result.usage).toEqual({ prompt: 321, completion: 18, total: 339, cached: 200, estimated: false });
@@ -121,7 +121,7 @@ describe('Stream usage and output limits', () => {
   });
   it('falls back for routers that reject include_usage and remembers the capability', async () => {
     const requests: any[] = [];
-    const url = await modelServer((req, res) => { let body = ''; req.on('data', data => body += data); req.on('end', () => { const payload = JSON.parse(body); requests.push(payload); if (payload.stream_options) { res.writeHead(400); res.end('unsupported stream_options include_usage'); } else { res.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n'); } }); });
+    const url = await modelServer((req, res) => { let body = ''; req.on('data', data => body += data); req.on('end', () => { const payload = JSON.parse(body); requests.push(payload); if (payload.stream_options) { res.writeHead(400); res.end('unsupported stream_options include_usage'); } else { res.end('data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\n'); } }); });
     const c = { ...config(), baseUrl: url, apiKey: 'fake-key' }, client = new ModelClient(c);
     expect((await client.chat([], [])).content).toBe('OK'); await client.chat([], []);
     expect(requests).toHaveLength(3); expect(requests[2].stream_options).toBeUndefined();

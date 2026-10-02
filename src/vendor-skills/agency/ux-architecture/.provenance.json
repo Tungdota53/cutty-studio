@@ -1,0 +1,16 @@
+{
+  "repository": "msitarzewski/agency-agents",
+  "commit": "d3f71c4bb8922d3eea7576237a870dd59b3cdd52",
+  "license": "MIT",
+  "path": "design/design-ux-architect.md",
+  "sourcePaths": [
+    "design/design-ux-architect.md"
+  ],
+  "adaptation": "Vibe-authored role adapter; original source documents retained in references.",
+  "url": "https://github.com/msitarzewski/agency-agents/blob/d3f71c4bb8922d3eea7576237a870dd59b3cdd52/design/design-ux-architect.md",
+  "files": {
+    "LICENSE.txt": "9a45258434d5cedf0af73c9ad4771373701225038d246c49219026c33677f66f",
+    "references/source-1.md": "fd0744572dc824aadc9854ed61f571e3782a38ff76033c9eb6849fc9d4e6c00f",
+    "SKILL.md": "e85593aa2ab4cba1ef02b02d6d8a461e61d47fe558a9c77c876cb8ec909cc3f2"
+  }
+}
