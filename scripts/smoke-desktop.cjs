@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const assert = require('node:assert/strict');
-const root = path.resolve('.vibe/desktop-smoke');
+const root = path.resolve(process.env.VIBE_SMOKE_WORKSPACE || '.vibe/desktop-smoke');
 fs.mkdirSync(root, { recursive: true });
 app.setPath('userData', root);
 process.env.VIBE_WORKSPACE = root;
@@ -15,6 +15,22 @@ const model = http.createServer((req, res) => {
   let body = ''; req.on('data', data => body += data); req.on('end', () => {
     requests.push(JSON.parse(body));
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    const request = requests.at(-1), user = request.messages.findLast(message => message.role === 'user')?.content || '';
+    if (user.includes('smoke-teamwork-page') && request.messages[0].content.includes('You are Vibe planner')) {
+      const content = JSON.stringify({ tasks: [{ id: 'T1', title: 'Create smoke page', role: 'coder', description: 'smoke-create-page', dependencies: [] }, { id: 'T2', title: 'Test smoke page', role: 'tester', description: 'smoke-check-page', dependencies: ['T1'] }, { id: 'T3', title: 'Review smoke page', role: 'reviewer', description: 'smoke-review-page', dependencies: ['T2'] }] });
+      res.end('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n'); return;
+    }
+    if (user.startsWith('smoke-') && user.endsWith('-page')) {
+      const tools = request.messages.filter(message => message.role === 'tool');
+      if (!tools.length) {
+        const write = user === 'smoke-create-page';
+        const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: 'smoke-teamwork.html', content: '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
+      }
+      assert(tools.every(tool => JSON.parse(tool.content).ok));
+      if (user !== 'smoke-create-page') assert(tools.at(-1).content.includes('alo alo'));
+      res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'Verified smoke page' } }] }) + '\n\ndata: [DONE]\n\n'); return;
+    }
     const text = requests.at(-1).tools ? 'Đã kiểm tra giao diện desktop.\n\n**Sẵn sàng làm việc.**\n\n```typescript\nconst studio = "Vibe";\n```' : 'Mục tiêu: kiểm tra desktop. Giữ kết quả đã xác nhận và tiếp tục từ lượt trước.';
     res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\ndata: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 351, completion_tokens: 24, total_tokens: 375, prompt_tokens_details: { cached_tokens: 123 } } }) + '\n\ndata: [DONE]\n\n');
   });
@@ -74,6 +90,11 @@ app.on('browser-window-created', (_, win) => {
       fs.writeFileSync('release/preview-chat.png', (await win.webContents.capturePage()).toPNG());
       await win.webContents.executeJavaScript(`document.getElementById('new-chat').click();document.querySelector('#history button').click();`);
       await wait(win, `document.querySelectorAll('.message').length >= 2`);
+      await win.webContents.executeJavaScript(`document.getElementById('mode').value='teamwork';document.getElementById('prompt').value='smoke-teamwork-page';document.getElementById('composer').requestSubmit();`);
+      await wait(win, `document.getElementById('stop-button').hidden && document.getElementById('messages').textContent.includes('Kết quả Teamwork')`);
+      assert.equal(fs.readFileSync(path.join(root, 'smoke-teamwork.html'), 'utf8'), '<h1>alo alo</h1>');
+      const report = await win.webContents.executeJavaScript(`document.getElementById('messages').textContent`);
+      assert(!report.includes(': failed')); assert(!report.includes(': blocked')); assert(!fs.existsSync(path.join(root, '.git')));
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
       fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));

@@ -148,7 +148,7 @@ function connect() {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
       case 'model_catalog': $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
       case 'skill_results': showSkills(msg.skills || []); break;
-      case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); break;
+      case 'init': configure(msg.config); showHistory(msg.sessions || []); showDiff(msg.diff || ''); setBusy(Boolean(msg.busy)); send({ type: 'get_team' }); break;
       case 'configured':
         configure(msg.config);
         if (pendingSettings && window.desktop) {

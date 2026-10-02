@@ -70,12 +70,21 @@ export class Teamwork {
     fs.mkdirSync(root, { recursive: true });
     const log = new EventLog(root, id);
     this.db.session(id, 'running', this.c.model, goal);
+    const worktrees = new Worktrees(this.c.workspace, root);
+    let git;
+    try { git = await worktrees.inspect(); }
+    catch (error) { this.db.session(id, 'failed', this.c.model); throw error; }
+    const isolated = this.c.useWorktrees && git.worktrees;
+    const workspaceMode = isolated ? 'git-worktree' : 'shared-folder';
 
     emit({
       type: 'session_start',
+      workspaceMode,
+      workspaceReason: git.reason,
       message: `Teamwork: ${id} started for goal: ${goal}`,
       timestamp: new Date().toISOString(),
     });
+    if (!isolated) emit({ type: 'agent_status', workspaceMode, message: git.reason === 'ready' ? 'Dùng thư mục dự án; chạy các tác vụ lần lượt để tránh ghi đè.' : 'Thư mục chưa có Git/commit hoặc thiếu Git; Teamwork làm trực tiếp trong dự án và chạy lần lượt.' });
 
     const library = new SkillLibrary(this.c.workspace);
     const baseTools = new Tools(this.c.workspace, this.approve, 'planner', library);
@@ -99,7 +108,7 @@ export class Teamwork {
     let planRaw: string;
     try {
       planRaw = await planner.run(
-        `Inspect repository and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. Include implementation tasks, a tester task depending on coders, then reviewer depending on tester. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
+        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For requested code changes include implementation tasks, a tester task depending on coders, then reviewer depending on tester. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
         this.abort.signal, undefined, [], { namedAgentId: namedPlanner?.id, agentConfig: this.c, onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' }) }
       );
       this.tasks = this.parsePlan(planRaw);
@@ -120,6 +129,7 @@ export class Teamwork {
     } catch (e) {
       const isAborted = this.abort.signal.aborted;
       const status = isAborted ? 'cancelled' : 'failed';
+      this.db.session(id, status, this.c.model, goal);
       this.agents.set(plannerId, { role: 'planner', status, model: plannerModel });
       this.db.agent(id, { id: plannerId, role: 'planner', status, model: plannerModel });
 
@@ -138,11 +148,13 @@ export class Teamwork {
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
 
-    const worktrees = new Worktrees(this.c.workspace, root);
-
     while (this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
       updateReady(this.tasks);
-      const ready = this.tasks.filter(t => t.status === 'ready').slice(0, this.c.maxAgents);
+      this.tasks.filter(t => t.status === 'blocked').forEach(t => {
+        t.error ||= `Bị chặn bởi tác vụ: ${t.dependencies.filter(dep => ['failed', 'blocked', 'cancelled'].includes(this.tasks.find(task => task.id === dep)!.status)).join(', ')}`;
+        this.db.task(id, t);
+      });
+      const ready = this.tasks.filter(t => t.status === 'ready').slice(0, isolated ? this.c.maxAgents : 1);
       if (!ready.length) {
         if (!this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
           break;
@@ -168,7 +180,7 @@ export class Teamwork {
           let selectedModel = this.c.model;
 
           try {
-            if (t.role === 'coder' && this.c.useWorktrees) {
+            if (t.role === 'coder' && isolated) {
               const dirty = await worktrees.status();
               if (dirty) {
                 throw new Error('Workspace dirty; từ chối tạo/merge worktree để bảo vệ thay đổi user');
@@ -301,6 +313,7 @@ export class Teamwork {
 
     return {
       id,
+      workspaceMode,
       status,
       tasks: this.tasks,
       agents: [...this.agents.entries()],
@@ -309,5 +322,6 @@ export class Teamwork {
     };
   }
 }
+
 
 

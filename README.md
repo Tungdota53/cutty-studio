@@ -4,6 +4,8 @@
 
 ## Agent riêng và skill GitHub — 0.4.0
 
+Bản 0.4.1 sửa lỗi Teamwork trong thư mục chưa có Git (`fatal: not a git repository`). App phát hiện thư mục thường, repo chưa có commit đầu tiên hoặc thiếu Git và chạy trực tiếp, tuần tự trong workspace. Không tự khởi tạo Git hay tạo commit. Repo Git sạch có commit vẫn dùng worktree; các thay đổi nguồn chưa commit vẫn được bảo vệ. Dữ liệu do app tạo trong `.vibe` không làm repo bị nhận nhầm là dirty. Tác vụ bị chặn lưu rõ nguyên nhân/phụ thuộc.
+
 Mở **Thiết lập agent**, mở một agent và nhập **Model riêng**. Có thể tạo nhiều agent cùng vai nhưng dùng model khác nhau; thứ tự chọn là model agent → model vai → model mặc định. Nút **Lấy danh sách model từ API** nạp danh sách từ nhà cung cấp; bạn vẫn có thể nhập ID model. Cấu hình agent được lưu theo dự án. Chọn agent trong ô soạn chat để nói chuyện trực tiếp; Teamwork nhận danh sách agent đang bật và phân công bằng `agentId` khớp vai.
 
 Bản này đóng gói thêm năm skill nguyên bản từ repo chính chủ, kèm giấy phép Apache 2.0 và toàn bộ tài nguyên tham chiếu:
@@ -46,8 +48,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.4.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.4.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.4.1-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.4.1-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 
