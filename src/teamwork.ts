@@ -18,7 +18,8 @@ import { roleSchema, roleCatalog, assignedAgent } from './roles.js';
 import { SkillLibrary } from './skills.js';
 import { dependencyFingerprints, qualityGate, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
 import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
-import { scheduleRepair } from './team-repair.js';
+import { scheduleRepairs } from './team-repair.js';
+import { Pipeline } from './pipeline.js';
 import { planObject, validatedPlan } from './plan-recovery.js';
 
 export function parseTeamPlan(raw: string): Task[] {
@@ -40,6 +41,7 @@ export class Teamwork {
   tasks: Task[] = [];
   agents = new Map<string, { role: Role; status: string; model: string }>();
   private abort = new AbortController();
+  private static readonly activeWorkspaces = new Set<string>();
   private running = false;
   private internalFailure = false;
 
@@ -60,21 +62,27 @@ export class Teamwork {
   }
 
   async run(goal: string, onEvent: (event: TeamworkEvent | string) => void = console.log) {
-    if (this.running) throw new Error('Teamwork đang chạy. Dừng hoặc đợi phiên hiện tại kết thúc.');
+    const workspace = path.resolve(this.c.workspace).toLowerCase();
+    if (this.running || Teamwork.activeWorkspaces.has(workspace)) throw new Error('Teamwork đang chạy trong workspace này. Dừng hoặc đợi phiên hiện tại kết thúc.');
     this.running = true;
+    Teamwork.activeWorkspaces.add(workspace);
     this.abort = new AbortController();
     this.internalFailure = false;
     this.tasks = [];
     this.agents.clear();
     try { return await this.runSession(goal, onEvent); }
-    finally { this.running = false; }
+    finally { this.running = false; Teamwork.activeWorkspaces.delete(workspace); }
   }
 
   private async runSession(
     goal: string,
     onEvent: (event: TeamworkEvent | string) => void = console.log
   ) {
+    let eventLog: EventLog | undefined;
     const emit = (event: TeamworkEvent) => {
+      if (event.type !== 'agent_status' && event.type !== 'task_snapshot') {
+        try { eventLog?.emit('teamwork_' + event.type, { event }); } catch { /* Pipeline checkpoints remain authoritative if event logging is unavailable. */ }
+      }
       if (onEvent) {
         try {
           onEvent(event);
@@ -88,10 +96,12 @@ export class Teamwork {
     const root = path.join(this.c.workspace, '.vibe');
     fs.mkdirSync(root, { recursive: true });
     const log = new EventLog(root, id);
+    eventLog = log;
     const sessionRoot = path.join(root, 'sessions', id);
     fs.mkdirSync(sessionRoot, { recursive: true });
     fs.writeFileSync(path.join(sessionRoot, 'ORIGINAL_REQUEST.md'), `# Original request\n\n${goal}\n`);
     const evidence = new Map<string, TaskEvidence>();
+    const pipeline = new Pipeline(sessionRoot, id, this.c.maxAgents);
     let repairRounds = 0;
     this.db.session(id, 'running', this.c.model, goal);
     try {
@@ -200,7 +210,8 @@ export class Teamwork {
     }
 
     this.tasks.forEach(t => this.db.task(id, t));
-    const snapshot = () => emit({ type: 'task_snapshot', sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() });
+    let lastSnapshot = 0;
+    const snapshot = () => { lastSnapshot = Date.now(); emit({ type: 'task_snapshot', pipeline: pipeline.snapshot(this.tasks, evidence), sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() }); };
     snapshot();
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
@@ -209,6 +220,7 @@ export class Teamwork {
     const pendingRepairs: { task: Task; reason: string }[] = [];
     const executeTask = async (t: Task, index: number) => {
           t.status = 'running';
+          pipeline.dispatch(this.tasks);
           t.startedAt = new Date().toISOString();
           const candidates = this.c.namedAgents?.filter(agent => agent.enabled && agent.role === t.role) || [];
           const specialized = candidates.filter(agent => phaseAgents[taskPhase(t)]?.includes(agent.id));
@@ -301,7 +313,7 @@ export class Teamwork {
             writeAgentArtifact(sessionRoot, aid, 'progress.md', 'RUNNING\n');
             let step = 'Starting agent';
             const progress = () => writeAgentArtifact(sessionRoot, aid, 'progress.md', `# Progress\n\nStatus: RUNNING\nPhase: ${taskPhase(t)}\nTask: ${t.id}\nAttempt: ${t.retries || 0}\nLast heartbeat: ${new Date().toISOString()}\nCurrent step: ${step}\n`);
-            heartbeat = setInterval(() => { try { progress(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
+            heartbeat = setInterval(() => { try { progress(); if (Date.now() - lastSnapshot >= 1000) snapshot(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
             const taskEvidence: TaskEvidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
             if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t))) taskEvidence.files = dependencyFingerprints(t, this.tasks, scope);
             evidence.set(t.id, taskEvidence);
@@ -316,7 +328,7 @@ export class Teamwork {
               skills: t.skills,
               namedAgentId: assigned?.id,
               agentConfig: this.c,
-              onModel: model => { t.model = model; this.db.task(id, t); emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', model }); },
+              onModel: model => { selectedModel = model; t.model = model; this.agents.set(aid, { role: t.role, status: 'running', model }); this.db.agent(id, { id: aid, role: t.role, status: 'running', model, currentTaskId: t.id }); this.db.task(id, t); emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', model }); },
               skillWorkspace: this.c.workspace,
               onSkills: skills => {
                 t.loadedSkills = skills.map(skill => skill.id);
@@ -329,6 +341,8 @@ export class Teamwork {
               },
               onItem: item => {
                 this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls);
+                if (item.role === 'tool') pipeline.tool();
+                if (Date.now() - lastSnapshot >= 1000) snapshot();
                 step = item.tool_calls?.map(call => call.function.name).join(', ') || (item.role === 'tool' ? `Finished ${calls.get(item.tool_call_id || '') || 'tool'}` : item.role);
                 emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', step, timestamp: new Date().toISOString() });
                 progress();
@@ -405,13 +419,14 @@ export class Teamwork {
     while (pool.size || pendingRepairs.length || this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
       // Drain concurrent validators before a repair invalidates their source and evidence.
       if (!pool.size && pendingRepairs.length) {
-        for (const failure of pendingRepairs.splice(0)) {
-          if (failure.task.status !== 'failed' || this.abort.signal.aborted) continue;
-          const repair = scheduleRepair(this.tasks, failure.task, failure.reason, repairRounds + 1);
-          if (!repair) continue;
+        const findings = pendingRepairs.splice(0).filter(failure => failure.task.status === 'failed');
+        const repair = !this.abort.signal.aborted && scheduleRepairs(this.tasks, findings, repairRounds + 1);
+        if (repair) {
           repairRounds++;
+          pipeline.repair(repairRounds, repair.id, findings.map(failure => `${failure.task.id}: ${failure.reason.slice(0, 500)}`));
           for (const task of this.tasks) { if (task.status === 'pending') evidence.delete(task.id); this.db.task(id, task); }
-          emit({ type: 'agent_status', taskId: failure.task.id, status: 'pending', message: `Gate yêu cầu sửa: ${repair.id}. Agent/context mới; chạy lại kiểm tra phụ thuộc sau khi các agent hiện tại kết thúc.` });
+          log.emit('repair_scheduled', { round: repairRounds, repairId: repair.id, findings: findings.map(failure => ({ taskId: failure.task.id, reason: failure.reason })) });
+          emit({ type: 'agent_status', taskId: repair.id, status: 'pending', message: `Vòng sửa ${repairRounds}/2: gom ${findings.length} lỗi từ ${findings.map(failure => failure.task.id).join(', ')}; chạy lại toàn bộ tác vụ phụ thuộc bị ảnh hưởng.` });
         }
       }
       if (fatalError) { if (pool.size) { await Promise.all(pool.values()); continue; } throw fatalError; }
@@ -448,7 +463,7 @@ export class Teamwork {
     fs.writeFileSync(path.join(sessionRoot, 'gate.json'), JSON.stringify({ ...gate, repairRounds, tasks: this.tasks.map(task => ({ id: task.id, phase: taskPhase(task), status: task.status, evidence: evidence.get(task.id) || null })) }, null, 2));
     const requirements = this.tasks.flatMap(task => (task.acceptanceCriteria || []).map(criterion => ({ taskId: task.id, criterion, requiredCommands: task.verificationCommands || [], checks: evidence.get(task.id)?.checks || [], stale: evidence.get(task.id)?.stale || false })));
     fs.writeFileSync(path.join(sessionRoot, 'requirements.json'), JSON.stringify({ goal, criteria: requirements, note: 'Natural-language criteria are declared contracts. Recorded execution evidence does not automatically prove every criterion; independent review/audit must evaluate them.' }, null, 2));
-    emit({ type: 'session_end', sessionId: id, status, gate, timestamp: new Date().toISOString() });
+    emit({ type: 'session_end', sessionId: id, status, gate, pipeline: pipeline.snapshot(this.tasks, evidence, status, gate), timestamp: new Date().toISOString() });
 
     return {
       id,
@@ -475,8 +490,10 @@ export class Teamwork {
         this.db.agent(id, { id: agentId, ...agent, status });
         emit({ type: 'agent_status', agentId, ...agent });
       }
-      emit({ type: 'task_snapshot', sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task) })), timestamp: new Date().toISOString() });
-      emit({ type: 'session_end', sessionId: id, status, message: String(error), gate: { verdict: 'FAIL', reasons: [String(error)] }, timestamp: new Date().toISOString() });
+      let finalPipeline;
+      try { finalPipeline = pipeline.snapshot(this.tasks, evidence, status, { verdict: 'FAIL', reasons: [String(error)] }); } catch { /* Preserve the original storage failure. */ }
+      emit({ type: 'task_snapshot', sessionId: id, pipeline: finalPipeline, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task) })), timestamp: new Date().toISOString() });
+      emit({ type: 'session_end', sessionId: id, status, pipeline: finalPipeline, message: String(error), gate: { verdict: 'FAIL', reasons: [String(error)] }, timestamp: new Date().toISOString() });
       throw error;
     }
   }

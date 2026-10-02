@@ -10,7 +10,7 @@ window.TeamMap = (() => {
   const stepText = value => value?.startsWith('Finished ') ? 'Xong · ' + (stepLabels[value.slice(9)] || value.slice(9)) : stepLabels[value] || value;
   const fallbackPhase = { planner:'survey',coder:'implementation',tester:'verification',reviewer:'review',judge:'acceptance',general:'survey' };
   let tasks = [], roster = [], live = new Map(), selected = null, zoom = 1, width = 800, height = 400, diagram = 'agents', maxAgents = 4, roleModels = {}, defaultModel = '';
-  let session = null, running = false, connected = true, follow = true, goal = '', gate = null, rendering = 0, planner = null;
+  let session = null, running = false, connected = true, follow = true, goal = '', gate = null, rendering = 0, planner = null, pipeline = null;
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const svgNode = (tag, attributes) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [key,value] of Object.entries(attributes)) el.setAttribute(key, String(value)); return el; };
   const phaseOf = task => task.phase || fallbackPhase[task.role] || 'survey';
@@ -53,6 +53,17 @@ window.TeamMap = (() => {
     get('map-live-dot').classList.toggle('is-live', running && connected);
     get('map-session-label').textContent = !connected && running ? 'Mất kết nối · đang thử lại' : running ? 'Team đang hoạt động' : session ? 'Phiên Teamwork' : 'Team của bạn';
     get('map-goal').textContent = goal || 'Theo dõi cách team biến yêu cầu thành kết quả.';
+    const monitor = get('map-pipeline-status');
+    monitor.textContent = pipeline ? `${pipeline.total || all.length} task · cao điểm ${pipeline.peakConcurrency || 0}/${pipeline.maxAgents || maxAgents} agent song song · ${pipeline.toolCalls || 0} lượt công cụ · ${pipeline.successfulChecks || 0} kiểm tra đạt${pipeline.failedChecks ? ` · ${pipeline.failedChecks} kiểm tra lỗi` : ''} · ${pipeline.repairs?.length || 0}/2 vòng sửa · ${pipeline.diagnostics?.length || 0} lưu ý kế hoạch · ${Math.floor((pipeline.elapsedMs || 0) / 1000)} giây · Bấm để xem` : 'Pipeline lưu lượt chạy, agent song song, kiểm tra và vòng sửa.';
+    monitor.dataset.state = pipeline?.status === 'completed' && pipeline?.gate?.verdict === 'PASS' ? 'passed' : pipeline?.status === 'failed' || pipeline?.status === 'cancelled' || pipeline?.gate?.verdict === 'FAIL' ? 'failed' : pipeline?.status === 'running' ? 'active' : '';
+    const report = get('map-pipeline-details'); report.replaceChildren();
+    if (pipeline) {
+      report.append(node('p','pipeline-detail-heading',`Pipeline ${pipeline.status} · lần lưu ${pipeline.sequence || 0} · đỉnh ${pipeline.peakConcurrency || 0}/${pipeline.maxAgents || maxAgents} slot · ${pipeline.attempts || 0} lượt agent · ${pipeline.toolCalls || 0} công cụ · ${pipeline.elapsedMs || 0} ms`));
+      if (pipeline.diagnostics?.length) { report.append(node('strong','pipeline-group-title','Kế hoạch cần chú ý')); for (const issue of pipeline.diagnostics) report.append(node('p','pipeline-note',`${issue.taskId} · ${issue.message}`)); }
+      if (pipeline.repairs?.length) { report.append(node('strong','pipeline-group-title','Lịch sử sửa lỗi')); for (const repair of pipeline.repairs) report.append(node('p','pipeline-note',`Vòng ${repair.round} · ${repair.taskId} · ${repair.findings.join(' | ')}`)); }
+      if (pipeline.tasks?.length) { report.append(node('strong','pipeline-group-title','Tiêu chí và kiểm tra')); for (const task of pipeline.tasks.filter(item => item.criteria?.length || item.requiredCommands?.length)) report.append(node('p','pipeline-note',`${task.id} · ${(task.criteria || []).join(' / ') || 'Chưa khai báo tiêu chí'} · ${task.evidence?.checks?.length || 0}/${(task.requiredCommands || []).length} lệnh bắt buộc có bằng chứng`)); }
+      if (!pipeline.diagnostics?.length && !pipeline.repairs?.length) report.append(node('p','pipeline-note','Không có lưu ý lập kế hoạch hoặc vòng sửa tự động.'));
+    }
     get('map-summary').textContent = gate ? `${gate.verdict} · ${(gate.reasons || []).join(' · ') || 'Đã tổng hợp gate nghiệm thu.'}` : session ? `${session} · ${counts.completed || 0}/${all.length} tác vụ hoàn tất` : 'Sơ đồ hiển thị dữ liệu thật từ phiên Teamwork.';
     renderFleet(all);
     get('map-phases').replaceChildren();
@@ -140,6 +151,9 @@ window.TeamMap = (() => {
     for (const [key,value] of [['Vai trò',task.role],['AI / Model',modelFor(state)],['Agent ID',task.assignedAgentId || 'Chưa tạo'],['Pha',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)],['Lần thử',String((task.retries || 0) + 1)],['Trạng thái',state.waitReason || stepText(state.step) || state.message || 'Chưa có cập nhật']]) { facts.append(node('dt','',key),node('dd','',value)); }
     target.append(facts);
     for (const [label,values] of [['Skill',state.skills || task.loadedSkills || []],['Phụ thuộc',task.dependencies || []],['Tệp được giao',task.expectedFiles || []]]) { target.append(node('h4','',label)); const chips = node('div','detail-chips'); for (const value of values) chips.append(node('span','',value)); if (!values.length) chips.append(node('small','muted','Chưa có')); target.append(chips); }
+    const evidence = pipeline?.tasks?.find(item => item.id === task.id)?.evidence;
+    if (task.acceptanceCriteria?.length) { target.append(node('h4','','Tiêu chí nghiệm thu')); for (const item of task.acceptanceCriteria) target.append(node('p','pipeline-note',item)); }
+    if (task.verificationCommands?.length || evidence?.checks?.length) { target.append(node('h4','','Bằng chứng kiểm tra')); target.append(node('p','pipeline-note',`Đã đọc mã: ${evidence?.inspected ? 'Có' : 'Chưa'} · Bằng chứng cũ: ${evidence?.stale ? 'Đã mất hiệu lực' : 'Còn hiệu lực'}`)); for (const check of evidence?.checks || []) { target.append(node('p','pipeline-check',`exit ${check.exitCode} · ${check.command}`)); if (check.excerpt) target.append(node('pre','pipeline-evidence',check.excerpt)); } }
     if (task.error || task.resultSummary) { const details = node('details','detail-result'); details.append(node('summary','',task.error ? 'Chi tiết lỗi' : 'Kết quả tác vụ'),node('pre','',task.error || task.resultSummary)); target.append(details); }
   }
   function feed(event) {
@@ -149,23 +163,23 @@ window.TeamMap = (() => {
     row.append(node('time','',stamp.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})),node('p','',event.message || `${event.taskId || 'Agent'} · ${stepText(event.step)}`)); target.prepend(row);
     while (target.children.length > 80) target.lastChild.remove();
   }
-  function reset() { tasks = []; live.clear(); planner = null; selected = null; gate = null; session = null; running = false; goal = ''; get('map-nodes').replaceChildren(); get('map-feed').replaceChildren(node('p','muted','Sự kiện mới sẽ xuất hiện ở đây.')); get('map-detail-content').replaceChildren(node('p','detail-placeholder','Chọn tác vụ để xem chi tiết agent.')); get('map-viewport').dataset.following = ''; schedule(); }
+  function reset() { tasks = []; live.clear(); planner = null; pipeline = null; get('map-pipeline-card').open = false; selected = null; gate = null; session = null; running = false; goal = ''; get('map-nodes').replaceChildren(); get('map-feed').replaceChildren(node('p','muted','Sự kiện mới sẽ xuất hiện ở đây.')); get('map-detail-content').replaceChildren(node('p','detail-placeholder','Chọn tác vụ để xem chi tiết agent.')); get('map-viewport').dataset.following = ''; schedule(); }
   function event(event) {
     if (event.type === 'session_start') { reset(); session = event.sessionId; goal = event.goal || ''; running = true; view('team'); }
     if (event.agentId && !event.taskId && event.role === 'planner') planner = {...planner,...event};
-    if (event.type === 'task_snapshot') { tasks = event.tasks || []; maxAgents = event.maxAgents || maxAgents; for (const task of tasks) { const prior = live.get(task.id); if (!prior) continue; if (task.assignedAgentId !== prior.agentId) live.delete(task.id); else if (task.status !== prior.status) live.set(task.id,{ agentId:prior.agentId, configuredAgentId:prior.configuredAgentId, agentName:prior.agentName, model:prior.model, skills:prior.skills, status:task.status }); } }
+    if (event.type === 'task_snapshot') { pipeline = event.pipeline || pipeline; tasks = event.tasks || []; maxAgents = event.maxAgents || maxAgents; for (const task of tasks) { const prior = live.get(task.id); if (!prior) continue; if (task.assignedAgentId !== prior.agentId) live.delete(task.id); else if (task.status !== prior.status) live.set(task.id,{ agentId:prior.agentId, configuredAgentId:prior.configuredAgentId, agentName:prior.agentName, model:prior.model, skills:prior.skills, status:task.status }); } }
     if (event.taskId && event.type !== 'task_snapshot') {
       const task = tasks.find(task => task.id === event.taskId);
       // A failed old attempt must not overwrite a task already reset for repair.
       if (!(task?.status === 'pending' && event.type === 'task_failed')) live.set(event.taskId,{...live.get(event.taskId),...event});
       if (!selected && event.type === 'task_start') selected = event.taskId;
     }
-    if (event.type === 'session_end') { running = false; gate = event.gate; }
+    if (event.type === 'session_end') { running = false; gate = event.gate; pipeline = event.pipeline || pipeline; }
     feed(event); schedule();
   }
   function restore(state, history = false) {
     if (!state) return;
-    reset(); session = state.sessionId; goal = state.goal || ''; running = !history && state.status === 'running'; gate = state.gate || null; planner = state.planner || null;
+    reset(); session = state.sessionId; goal = state.goal || ''; pipeline = state.pipeline || null; running = !history && state.status === 'running'; gate = state.gate || null; planner = state.planner || null;
     maxAgents = state.maxAgents || maxAgents; tasks = (state.tasks || []).map(task => history && ['running','ready'].includes(task.status) ? {...task,status:'interrupted'} : task); schedule();
   }
   get('view-team').onclick = get('open-map').onclick = () => view('team');

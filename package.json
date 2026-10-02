@@ -1,6 +1,6 @@
 {
   "name": "vibe-cli-teamwork",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Windows coding workspace with persistent context and multi-agent teamwork",
   "type": "module",
   "main": "desktop/main.cjs",
@@ -78,14 +78,14 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "electron": "^44.5.1",
-    "electron-builder": "^26.15.3",
-    "esbuild": "^0.28.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.7.2",
     "@types/ws": "^8.18.2",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^4.1.11"
   }
 }

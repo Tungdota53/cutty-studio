@@ -384,13 +384,16 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           const rows = db.db.prepare('SELECT agent_id,content FROM messages WHERE session_id=? ORDER BY id').all(sessionId) as { agent_id: string; content: string }[];
           const tasks = db.tasks(sessionId).map(task => ({ ...task, phase: taskPhase(task) }));
           let gate = null;
+          let pipeline = null;
           if (/^session-[a-f0-9]{8}$/.test(sessionId)) {
             try { const saved = JSON.parse(fs.readFileSync(path.join(c.workspace, '.vibe', 'sessions', sessionId, 'gate.json'), 'utf8')); gate = { verdict: saved.verdict, reasons: saved.reasons }; }
             catch { /* Interrupted or older sessions may have no persisted gate. */ }
+            try { pipeline = JSON.parse(fs.readFileSync(path.join(c.workspace, '.vibe', 'sessions', sessionId, 'pipeline.json'), 'utf8')); }
+            catch { /* Sessions created before pipeline reporting have no report. */ }
           }
           const memory = db.conversation(sessionId);
           const manager = new ConversationContext(c, memory);
-          ws.send(JSON.stringify({ type: 'conversation', sessionId, tasks, gate, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
+          ws.send(JSON.stringify({ type: 'conversation', sessionId, tasks, gate, pipeline, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
         } else if (msg.type === 'approval_response') {
           const p = pendingApprovals.get(msg.id);
           if (p) {

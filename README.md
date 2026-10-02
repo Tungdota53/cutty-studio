@@ -2,6 +2,15 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Pipeline Teamwork có bằng chứng — 0.10.0
+
+- Sơ đồ theo dõi mức chạy song song cao nhất, model thực tế, tool calls, kiểm tra đạt/trượt, tiêu chí, plan diagnostics và hai vòng sửa tối đa. Bấm thanh **Pipeline** để xem lưu ý, lịch sử repair, lệnh kiểm tra và trích đoạn bằng chứng.
+- Mỗi phiên ghi checkpoint `pipeline.json` và lifecycle `events.jsonl`; mở lại lịch sử đọc cùng báo cáo. Thông tin nhạy cảm phổ biến được redact trước khi lưu báo cáo pipeline.
+- Khi nhiều tester/reviewer cùng phát hiện lỗi, đợi tất cả dừng rồi gom finding vào một repair. Chỉ gate hạ nguồn bị ảnh hưởng được chạy lại; các nguồn gốc và công việc triển khai đã hoàn tất được giữ nguyên.
+- Chặn hai Teamwork chạy chồng trong cùng workspace trên một tiến trình. Ưu tiên task có nhiều bước phụ thuộc phía sau, giữ số slot và khóa sở hữu file.
+- Tài liệu thiết kế và giới hạn ở [docs/team-pipeline-engineering.md](docs/team-pipeline-engineering.md). Báo cáo hỗ trợ kiểm tra và khôi phục UI; app chưa tự replay shell/write side effects sau khi tiến trình đóng.
+- Nâng Vitest lên 4.1.11 để xử lý cảnh báo dependency mức vừa. `npm audit` hiện không báo lỗ hổng; production dependencies cũng sạch. Build TypeScript đạt. Chưa chạy lại bộ test sau lần nâng cấp pipeline này.
+
 ## Phục hồi planner và điều phối — 0.9.0
 
 - Sửa lỗi `acceptanceCriteria: expected array, received string`: chuỗi đơn được chuyển thành một phần tử, giữ nguyên nội dung. Giới hạn là 30 tiêu chí, mỗi tiêu chí tối đa 1.000 ký tự. Các danh sách command, dependency, file và skill cũng được chuẩn hóa; dữ liệu sai kiểu vẫn bị chặn.

@@ -161,7 +161,7 @@ function connect() {
       case 'sessions': showHistory(msg.sessions || []); break;
       case 'conversation':
         if (msg.sessionId !== currentSession) break;
-        TeamMap.restore({ sessionId: msg.sessionId.startsWith('session-') ? msg.sessionId : null, tasks: msg.tasks || [], gate: msg.gate, goal: $('chat-title').textContent }, true);
+        TeamMap.restore({ sessionId: msg.sessionId.startsWith('session-') ? msg.sessionId : null, tasks: msg.tasks || [], gate: msg.gate, pipeline: msg.pipeline, goal: $('chat-title').textContent }, true);
         $('messages').replaceChildren();
         for (const item of msg.messages || []) renderText(addMessage(item.role, item.content), item.content);
         if (!msg.messages?.length) addMessage('assistant', msg.summary || 'Phiên teamwork này chưa có nội dung trò chuyện.');
