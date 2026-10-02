@@ -3,6 +3,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const assert = require('node:assert/strict');
+require('electron').dialog.showErrorBox = (title, message) => {
+  fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: `${title}: ${message}` }));
+  app.exit(1);
+};
 const root = path.resolve(process.env.VIBE_SMOKE_WORKSPACE || '.vibe/desktop-smoke');
 fs.mkdirSync(root, { recursive: true });
 app.setPath('userData', root);
@@ -27,8 +31,15 @@ const model = http.createServer((req, res) => {
         const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: 'smoke-teamwork.html', content: '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
+      if (user === 'smoke-check-page' && tools.length === 1) {
+        const call = { index: 0, id: 'smoke-executed-check', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: `node -e "process.exit(require('fs').readFileSync('smoke-teamwork.html','utf8').includes('alo alo')?0:1)"` }) } };
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'); return;
+      }
+      if (user === 'smoke-review-page') {
+        res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ verdict: 'PASS', findings: [], evidence: ['read_file smoke-teamwork.html'] }) } }] }) + '\n\ndata: [DONE]\n\n'); return;
+      }
       assert(tools.every(tool => JSON.parse(tool.content).ok));
-      if (user !== 'smoke-create-page') assert(tools.at(-1).content.includes('alo alo'));
+      if (user !== 'smoke-create-page') assert(tools.some(tool => tool.content.includes('alo alo')));
       res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'Verified smoke page' } }] }) + '\n\ndata: [DONE]\n\n'); return;
     }
     const text = requests.at(-1).tools ? 'Đã kiểm tra giao diện desktop.\n\n**Sẵn sàng làm việc.**\n\n```typescript\nconst studio = "Vibe";\n```' : 'Mục tiêu: kiểm tra desktop. Giữ kết quả đã xác nhận và tiếp tục từ lượt trước.';
@@ -53,6 +64,8 @@ app.on('browser-window-created', (_, win) => {
       const port = model.address().port;
       await win.webContents.executeJavaScript(`document.getElementById('team-button').click();`);
       await wait(win, `document.querySelectorAll('.role-card').length===7`);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.named-agent-card').length`), 12);
+      assert(await win.webContents.executeJavaScript(`!!document.querySelector('[data-agent=ui-ux] [data-field=model]') && !!document.querySelector('[data-agent=challenger]') && !!document.querySelector('[data-agent=auditor]')`));
       await win.webContents.executeJavaScript(`document.querySelector('[data-role=reviewer] [data-field=instructions]').value='Review authentication with evidence';document.getElementById('team-form').requestSubmit();`);
       await wait(win, `document.getElementById('team-status').textContent.includes('Đã lưu')`);
       const profiles = JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8'));
@@ -95,9 +108,10 @@ app.on('browser-window-created', (_, win) => {
       assert.equal(fs.readFileSync(path.join(root, 'smoke-teamwork.html'), 'utf8'), '<h1>alo alo</h1>');
       const report = await win.webContents.executeJavaScript(`document.getElementById('messages').textContent`);
       assert(!report.includes(': failed')); assert(!report.includes(': blocked')); assert(!fs.existsSync(path.join(root, '.git')));
+      assert(report.includes('Nghiệm thu: PASS'));
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'twelve specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.quit(); }
   });

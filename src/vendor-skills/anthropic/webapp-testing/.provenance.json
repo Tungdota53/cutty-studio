@@ -2,8 +2,8 @@
   "repository": "anthropics/skills",
   "commit": "8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4",
   "prefix": "skills",
-  "path": "skills/webapp-testing",
   "license": "Apache-2.0",
+  "path": "skills/webapp-testing",
   "url": "https://github.com/anthropics/skills/tree/8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4/skills/webapp-testing",
   "files": {
     "examples/console_logging.py": "ea46877289acb82da7e7ce59d0bc37c8977cd57e2a006d0c88d7a1c625bf95da",

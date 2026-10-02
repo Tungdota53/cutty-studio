@@ -20,15 +20,42 @@ function skill(dir: string, name: string, description: string, body = 'Read the 
   fs.writeFileSync(path.join(folder, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\n${body}`); return folder;
 }
 describe('Role permissions and skill loading', () => {
-  it('loads five GitHub skills with pinned provenance and paginated references', () => {
+  it('loads 28 GitHub skills with pinned provenance and paginated references', () => {
     const lib = new SkillLibrary(root()); const external = lib.list().filter(skill => skill.source === 'github');
-    expect(external).toHaveLength(5);
+    expect(external).toHaveLength(28);
     for (const skill of external) {
-      expect(skill.provenance).toMatchObject({ integrity: true, license: 'Apache-2.0' });
+      expect(skill.provenance?.integrity).toBe(true);
+      expect(['Apache-2.0', 'MIT', 'CC-BY-SA-4.0']).toContain(skill.provenance?.license);
       expect(skill.provenance?.commit).toMatch(/^[a-f0-9]{40}$/);
       expect(lib.load(skill.id).instructions.length).toBeGreaterThan(100);
     }
     expect(lib.resource('github:openai/security-best-practices', 'references/javascript-general-web-frontend-security.md', 1, 10)).toContain('Đọc tiếp từ dòng 11');
+  });
+  it('automatically matches pinned skills to role and topic with bounded context', () => {
+    const lib = new SkillLibrary(root());
+    const tester = lib.select('tester', 'property-based parser validator fast-check');
+    expect(tester.map(skill => skill.id)).toContain('github:trailofbits/property-based-testing');
+    expect(lib.select('planner', 'property-based parser validator fast-check').map(skill => skill.id)).not.toContain('github:trailofbits/property-based-testing');
+    expect(lib.select('coder', 'build suite').map(skill => skill.id)).not.toContain('github:uiux/ui-ux-pro-max');
+    expect(lib.select('coder', 'giao diện responsive accessibility').map(skill => skill.id)).toContain('github:uiux/ui-ux-pro-max');
+    expect(lib.select('tester', 'fast-check', { agentProfiles: { tester: { autoSkills: false } } }).map(skill => skill.id)).toEqual(['builtin:evidence-testing']);
+    expect(tester.reduce((total, skill) => total + skill.instructions.length, 0)).toBeLessThanOrEqual(24000);
+    const large = lib.load('github:trailofbits/codeql');
+    expect(large.instructions).toContain('Skill excerpt');
+    expect(large.instructions.length).toBeLessThan(16000);
+  });
+  it('enforces assigned files for direct writes without claiming shell isolation', async () => {
+    const dir = root(), tools = new Tools(dir, async () => true, 'coder', new SkillLibrary(dir), ['allowed.txt']);
+    expect((await tools.run('write_file', JSON.stringify({ path: 'allowed.txt', content: 'ok' }))).ok).toBe(true);
+    expect((await tools.run('write_file', JSON.stringify({ path: 'other.txt', content: 'bad' }))).ok).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'other.txt'))).toBe(false);
+  });
+  it('executes and cancels commands with an active agent signal', async () => {
+    const tools = new Tools(root(), async () => true, 'tester');
+    const active = new AbortController();
+    expect(await tools.run('run_command', JSON.stringify({ command: 'node --version' }), active.signal)).toMatchObject({ ok: true, output: expect.stringContaining('exit=0') });
+    active.abort();
+    expect((await tools.run('run_command', JSON.stringify({ command: 'node --version' }), active.signal)).ok).toBe(false);
   });
   it('rejects a tampered GitHub skill instead of loading its instructions', () => {
     const dir = root(), builtins = path.join(dir, 'skills'); fs.mkdirSync(builtins);
@@ -109,6 +136,15 @@ describe('Role permissions and skill loading', () => {
     await new Agent('general', 'general', dir, client, new ModelRouter(config), new Tools(dir)).run('Custom task', undefined, undefined, [], { onSkills: skills => loaded.push(skills.map(skill => skill.id)) });
     expect(calls[0][0].content).not.toContain('DYNAMIC_SKILL'); expect(calls[1][0].content).toContain('DYNAMIC_SKILL');
     expect(loaded.at(-1)).toContain('project:custom');
+  });
+  it('matches the user goal rather than incidental skill names in planner metadata', async () => {
+    const dir = root(), config = loadConfig(dir); let selected: string[] = [];
+    const client = { config, chat: async () => ({ content: 'Hello', toolCalls: [] }) } as unknown as ModelClient;
+    await new Agent('plan', 'planner', dir, client, new ModelRouter(config), new Tools(dir, async () => false, 'planner')).run(
+      'Catalog metadata contains security audit threat implementation requirements plan', undefined, undefined, [],
+      { skillTask: 'Xin chào', onSkills: skills => selected = skills.map(skill => skill.id) }
+    );
+    expect(selected).toEqual(['builtin:repository-planning']);
   });
   it('validates planner roles, unique IDs and dependency graphs before starting agents', () => {
     const task = { id: 'T1', title: 'Implement', role: 'coder', dependencies: [] };

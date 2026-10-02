@@ -1,0 +1,23 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/mutation-testing/skills/mutation-testing",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/mutation-testing/skills/mutation-testing",
+  "files": {
+    "agents/openai.yaml": "8e1026b33d8154171e7653b206f382caf2b3ae655890fe290a16a28eca4b9fba",
+    "assets/trail-of-bits-mark.svg": "4bf74c789b38dcf6ad762c136b6832363d27ae19fbaa9a18ec18d66ecce6ca05",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "references/blockchain-patterns.md": "8e556f661dfaa88792eee7c0593bef586b02ce7502f2167cc104e83dfcf967c0",
+    "references/equivalent-mutants.md": "ff4e959ec429133b61010892b213c2fd2a2a2b1b4e7d5424e52fc51f909c3e26",
+    "references/input-formats.md": "59107dd286158a4bfbb486f60640053cc8b249948cb6b8bf5bbf19e59270c06c",
+    "references/optimization-strategies.md": "3dda9d912cee153b7340b243cf8823a28b66c03aa34f5516790232075e276614",
+    "references/report-template.md": "6cf4e3b89d5cc3e5be380a4429d68f6796c8d57387a080f5c67f76bfff2c086e",
+    "references/severity-classification.md": "7fe0c245c4599c25fed53f29e5c7048f24e00cba5e5e62eff9ae92728b163b5c",
+    "SKILL.md": "20e6ee2b6cec91bad7572dea966b5fce1e50f9ef8d4bf2e4ba69ac9b679792ff",
+    "workflows/analyzing-results.md": "e3e17d2e66cf0dbaa359c051a00540dcdca86a4c5a18147b8268aed03fccd3f7",
+    "workflows/bug-hunter.md": "db4274ed9634cbe7aadef295d594ad15d163f57e6c66a896a20d80827f791a47",
+    "workflows/configuration.md": "f5651cd506c9eb843d25a5e468549c3f417370d9b635b779461549e4083224b0"
+  }
+}

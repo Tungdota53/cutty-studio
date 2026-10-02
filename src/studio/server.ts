@@ -15,7 +15,7 @@ import { Teamwork } from '../teamwork.js';
 import crypto from 'node:crypto';
 import { ConversationContext, contextLimits } from '../conversation.js';
 import { systemPrompt } from '../prompts.js';
-import { roleCatalog, roleProfile, roles, teamSchema, assignedAgent } from '../roles.js';
+import { roleCatalog, roleProfile, roles, teamSchema, assignedAgent, defaultAgents } from '../roles.js';
 import { SkillLibrary } from '../skills.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -103,7 +103,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let activeTeam: Teamwork | undefined;
   let busy = false;
   const skills = new SkillLibrary(c.workspace);
-  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents });
+  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents });
   const token = typeof options === 'object' ? options.token : undefined;
 
   const clients = new Set<WebSocket>();
@@ -328,8 +328,9 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi phân vai.');
           const data = teamSchema.parse(msg);
           const next = { ...c, maxAgents: data.maxAgents ?? c.maxAgents, namedAgents: data.namedAgents ?? c.namedAgents, agentProfiles: { ...c.agentProfiles, ...data.profiles } };
-          for (const role of roles) skills.select(role, '', next);
-          for (const agent of next.namedAgents || []) skills.select(agent.role, '', next, agent.skills);
+            const available = skills.list();
+            for (const role of roles) skills.select(role, '', next, [], available);
+            for (const agent of next.namedAgents || []) skills.select(agent.role, '', next, agent.skills, available);
           const file = path.join(c.workspace, '.vibe', 'config.json');
           const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
           fs.writeFileSync(file, JSON.stringify({ ...saved, agentProfiles: next.agentProfiles, namedAgents: next.namedAgents, maxAgents: next.maxAgents }, null, 2));
@@ -425,7 +426,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                 text: `[Teamwork] Khởi chạy tối đa ${c.maxAgents} agents cho mục tiêu: ${arg}`,
               });
 
-              await tw.run(arg, (ev) => {
+              const result = await tw.run(arg, (ev) => {
                 if (typeof ev === 'string') {
                   broadcast({ type: 'terminal_log', text: ev });
                 } else {
@@ -433,7 +434,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                 }
               });
 
-              broadcast({ type: 'stream_chunk', token: `**Kết quả Teamwork**\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}` });
+              broadcast({ type: 'stream_chunk', token: `**Kết quả Teamwork**\n\nNghiệm thu: ${result.gate.verdict}\n${result.gate.reasons.join('\n')}\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}` });
 
               const diff = await getDiffText();
               broadcast({ type: 'diff', diff });

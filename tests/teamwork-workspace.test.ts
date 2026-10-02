@@ -43,6 +43,11 @@ describe('Teamwork workspace mode', () => {
     expect(result.status).toBe('completed'); expect(result.workspaceMode).toBe('shared-folder'); expect(checked).toEqual(['check-page', 'review-page']);
     expect(fs.existsSync(path.join(dir, '.git'))).toBe(false);
     expect(store.tasks(result.id).map(task => task.status)).toEqual(['completed', 'completed', 'completed']);
+    expect(result.verified).toBe(false); // Free-form model claims are not execution evidence.
+    const session = path.join(dir, '.vibe', 'sessions', result.id);
+    expect(fs.readFileSync(path.join(session, 'GATE_STATUS.md'), 'utf8')).toContain('UNVERIFIED');
+    expect(fs.readFileSync(path.join(session, 'agents', 'agent-coder-01', 'DISPATCH.md'), 'utf8')).toContain('Workspace:');
+    expect(fs.readFileSync(path.join(session, 'agents', 'agent-reviewer-03', 'handoff.md'), 'utf8')).toContain('Tool evidence:');
   });
   it('serializes independent writers when no worktree isolation is available', async () => {
     const dir = root(); let active = 0, peak = 0;

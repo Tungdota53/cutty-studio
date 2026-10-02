@@ -2,8 +2,8 @@
   "repository": "openai/skills",
   "commit": "49f948faa9258a0c61caceaf225e179651397431",
   "prefix": "skills/.curated",
-  "path": "skills/.curated/security-best-practices",
   "license": "Apache-2.0",
+  "path": "skills/.curated/security-best-practices",
   "url": "https://github.com/openai/skills/tree/49f948faa9258a0c61caceaf225e179651397431/skills/.curated/security-best-practices",
   "files": {
     "agents/openai.yaml": "6e9c6f2edce448eb2b589f81ad6e3f722665021785513bcbfd0bf7b86b529171",

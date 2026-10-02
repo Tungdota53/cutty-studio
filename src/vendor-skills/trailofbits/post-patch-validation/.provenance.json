@@ -1,0 +1,16 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/post-patch-validation/skills/post-patch-validation",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/post-patch-validation/skills/post-patch-validation",
+  "files": {
+    "agents/openai.yaml": "26b1a313e35f8d0e585a01f4922baac69c57d3f8364db2fce853e81465c1aed2",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "references/evidence-model.md": "450175cb31b9d256c5783627bb7a708a9630f71eb5053fa8035f0daedfa9b7f1",
+    "scripts/post_patch_validation.py": "4f3e0d4c8557d8632ea998e634fc6bd18a932ecabb94ceba8c51045a795decf3",
+    "scripts/pyproject.toml": "81c10874ac5fd399c479b31a3c13713a4608138caad1ef61161ba139643ec02b",
+    "SKILL.md": "33b604f4d7d62eab393d710edb98b18505fcbe079c07c9428daa018f29439b54"
+  }
+}

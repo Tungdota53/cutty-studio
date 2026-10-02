@@ -16,6 +16,7 @@ import { newConversation } from './conversation.js';
 import { z } from 'zod';
 import { roleSchema, roleCatalog, assignedAgent } from './roles.js';
 import { SkillLibrary } from './skills.js';
+import { qualityGate, recordEvidence, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
 
 export function parseTeamPlan(raw: string): Task[] {
   const match = raw.match(/\{[\s\S]*\}/);
@@ -69,6 +70,8 @@ export class Teamwork {
     const root = path.join(this.c.workspace, '.vibe');
     fs.mkdirSync(root, { recursive: true });
     const log = new EventLog(root, id);
+    const sessionRoot = path.join(root, 'sessions', id);
+    const evidence = new Map<string, TaskEvidence>();
     this.db.session(id, 'running', this.c.model, goal);
     const worktrees = new Worktrees(this.c.workspace, root);
     let git;
@@ -108,8 +111,8 @@ export class Teamwork {
     let planRaw: string;
     try {
       planRaw = await planner.run(
-        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For requested code changes include implementation tasks, a tester task depending on coders, then reviewer depending on tester. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
-        this.abort.signal, undefined, [], { namedAgentId: namedPlanner?.id, agentConfig: this.c, onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' }) }
+        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. Avoid many isolated implementation worktrees: they cannot be automatically integrated; use a single implementation task when validation requires a unified workspace. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
+        this.abort.signal, undefined, [], { namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal, onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' }) }
       );
       this.tasks = this.parsePlan(planRaw);
       for (const task of this.tasks) assignedAgent(this.c, task.agentId, task.role);
@@ -147,6 +150,7 @@ export class Teamwork {
     this.tasks.forEach(t => this.db.task(id, t));
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
+    fs.writeFileSync(path.join(sessionRoot, 'PROJECT.md'), `# Teamwork\n\nGoal: ${goal}\n\nWorkspace mode: ${workspaceMode}\n\nWorkflow: survey → specification → implementation/test writing → executed tests → independent review → adversarial checks/audit when warranted. Handoff summaries are claims; acceptance requires recorded tool evidence.\n`);
 
     while (this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
       updateReady(this.tasks);
@@ -234,9 +238,29 @@ export class Teamwork {
               timestamp: new Date().toISOString(),
             });
 
-            const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve, t.role, library), log);
+            // Inspect the implementation workspace of a single dependency chain, including worktrees.
+            if (t.role !== 'coder') {
+              const paths = new Set<string>();
+              const visit = (task: Task, seen = new Set<string>()) => {
+                if (seen.has(task.id)) return; seen.add(task.id);
+                if (task.worktreePath) paths.add(task.worktreePath);
+                for (const dep of task.dependencies) { const parent = this.tasks.find(item => item.id === dep); if (parent) visit(parent, seen); }
+              };
+              visit(t);
+              if (paths.size === 1) { scope = [...paths][0]; t.worktreePath = scope; }
+              if (paths.size > 1) throw new Error('Các dependency nằm trong nhiều worktree chưa tích hợp; không thể kiểm tra một bản mã thống nhất.');
+            }
+            const dispatch = `# ${t.title}\n\nTask: ${t.id}\nAgent: ${assigned?.name || aid}\nRole: ${t.role}\nModel: ${selectedModel}\nWorkspace: ${scope}\nDependencies: ${t.dependencies.join(', ') || 'none'}\nAssigned write files: ${(t.expectedFiles || []).join(', ') || 'not specified; stay within task scope'}\n\n${t.description}\n\nReport changed/inspected files, commands with exit codes, findings and missing prerequisites. Never treat another agent's summary as verified evidence.\n`;
+            writeAgentArtifact(sessionRoot, aid, 'BRIEFING.md', `# Briefing\n\n${goal}\n\n${roleCatalog[t.role].responsibility}\n${assigned?.instructions || ''}\n`);
+            writeAgentArtifact(sessionRoot, aid, 'DISPATCH.md', dispatch);
+            writeAgentArtifact(sessionRoot, aid, 'progress.md', 'RUNNING\n');
+            const taskEvidence: TaskEvidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
+            evidence.set(t.id, taskEvidence);
+            const calls = new Map<string, string>();
+            const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve, t.role, library, t.role === 'coder' ? t.expectedFiles : undefined), log);
             const memoryKey = `${id}:${t.id}`;
             const state = newConversation(taskHandoff(goal, t, this.tasks, Math.floor((this.c.contextWindow || 32768) / 5)));
+            state.messages.push({ role: 'user', content: dispatch + (t.role === 'reviewer' ? '\nReturn final review as JSON {"verdict":"PASS|FAIL|UNVERIFIED","findings":[],"evidence":[]}. PASS requires inspecting actual source/diff and no unresolved findings.' : '') });
             t.resultSummary = await agent.run(t.description, this.abort.signal, undefined, [], {
               state,
               skills: t.skills,
@@ -249,7 +273,7 @@ export class Teamwork {
                 emit({ type: 'agent_status', agentId: aid, role: t.role, taskId: t.id, status: 'running', model: selectedModel, skills: t.loadedSkills, message: `${roleCatalog[t.role].label}: đã nạp ${skills.length} skill.` });
               },
               checkpoint: memory => this.db.saveConversation(memoryKey, memory),
-              onItem: item => this.db.archiveItem(memoryKey, item)
+              onItem: item => { this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls); }
             });
             t.status = 'completed';
             t.completedAt = new Date().toISOString();
@@ -302,6 +326,8 @@ export class Teamwork {
             });
           } finally {
             this.db.task(id, t);
+            writeAgentArtifact(sessionRoot, aid, 'progress.md', `${t.status.toUpperCase()}\n\n${t.error || ''}\n`);
+            writeAgentArtifact(sessionRoot, aid, 'handoff.md', `# Handoff ${t.id}\n\nStatus: ${t.status}\nWorkspace: ${scope}\nSkills: ${(t.loadedSkills || []).join(', ')}\nTool evidence: ${JSON.stringify(evidence.get(t.id) || {})}\n\n${t.resultSummary || t.error || 'No result'}\n`);
           }
         })
       );
@@ -310,6 +336,8 @@ export class Teamwork {
     const failed = this.tasks.filter(t => t.status !== 'completed');
     const status = failed.length ? 'failed' : 'completed';
     this.db.session(id, status, this.c.model, goal);
+    const gate = qualityGate(this.tasks, evidence);
+    fs.writeFileSync(path.join(sessionRoot, 'GATE_STATUS.md'), `# Acceptance: ${gate.verdict}\n\n${gate.reasons.map(reason => '- ' + reason).join('\n')}\n\nTask completion alone does not establish correctness. Successful commands are recorded execution evidence; their assertions still require review.\n`);
 
     return {
       id,
@@ -317,7 +345,8 @@ export class Teamwork {
       status,
       tasks: this.tasks,
       agents: [...this.agents.entries()],
-      verified: !failed.length,
+      verified: gate.verdict === 'PASS',
+      gate,
       failures: failed.map(x => x.error),
     };
   }

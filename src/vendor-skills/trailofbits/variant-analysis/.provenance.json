@@ -1,0 +1,29 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/variant-analysis/skills/variant-analysis",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/variant-analysis/skills/variant-analysis",
+  "files": {
+    "agents/openai.yaml": "6d6b67250ba8300e79491ac12e73262f54f2bf50776276fd04607ae4e3006fde",
+    "assets/trail-of-bits-mark.svg": "4bf74c789b38dcf6ad762c136b6832363d27ae19fbaa9a18ec18d66ecce6ca05",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "references/reporting.md": "07a1d8f25537ec3da44b7c6e484bf922ab2eeaee733ced6df423df7bea517906",
+    "references/root-cause.md": "b4556f22adadc894b22c8df01d98bb94596d4e035386c780fbca73594014660c",
+    "references/searching.md": "22834e63e7412220feec9bd1d4cfd9298c17679489ad66d13be450928bf5d158",
+    "references/triage.md": "f1f0277096ae41641be311c783f2f7a1c677c2c6b6e8a485986d8d5ed7fa3653",
+    "resources/codeql/cpp.ql": "efd574081969d2bdd19e1756302d843fdbf936968a72de62eb24d66db43efc0c",
+    "resources/codeql/go.ql": "d3fa419af29bb15bf81510c54bc1ce0cf55f5b7adbdbf79cc2c8cd922d2365fb",
+    "resources/codeql/java.ql": "ee4a92a5cbde67304d17a2c5fb739fe9acf1d39ebac9406e3d3a2c1cbbbb19c1",
+    "resources/codeql/javascript.ql": "b6ceaa3acb6ba6fa89903c14c8fd3aa7cf48316e6b2588dcacae51bb423b3526",
+    "resources/codeql/python.ql": "135ec55760e1e827065e34b002c6d954b4c4293d07233a93d7ff31d9d97528a9",
+    "resources/semgrep/cpp.yaml": "41f034c9a5967cc3b87bf5880243ed21f633017111489ee843dd5d002271b10a",
+    "resources/semgrep/go.yaml": "8a8257eb8e0a7150cb7dffa2b64813691fd560de24b0f85fa6640ec2bfc6595f",
+    "resources/semgrep/java.yaml": "5be3990b052bc9ce5e1aa203d1f3c93cb3cde7d46eba463c24c661fc6b342902",
+    "resources/semgrep/javascript.yaml": "2f97e3545fcac449820c2d058bcb9cc36822e238b6249efa3a5dcb4f5f576912",
+    "resources/semgrep/python.yaml": "c1ce15574569d45555d582707db030b226763d81b2d521d9e61d6067440948f2",
+    "resources/variant-report-template.md": "03333c762318a89dd819784a62695f7660713479a5009a15189314400836202f",
+    "SKILL.md": "7b6b78e499bcb88d05c68254ffc91ebc28edabf4e9808adcc40e2628ebb9407e"
+  }
+}

@@ -7,8 +7,9 @@ import type { Role } from './types.js';
 import type { Config } from './config.js';
 import { safePath, isSensitivePath } from './security.js';
 import crypto from 'node:crypto';
+import { recommendationScore, skillRoutes } from './skill-routing.js';
 
-export interface Skill { id: string; name: string; description: string; source: string; file: string; provenance?: { repository: string; commit: string; license: string; url: string; integrity: boolean } }
+export interface Skill { id: string; name: string; description: string; source: string; file: string; recommendedRoles?: Role[]; requires?: string[]; provenance?: { repository: string; commit: string; license: string; url: string; integrity: boolean } }
 // Bundled builds place the same assets next to desktop-host.mjs.
 const bundled = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skills');
 export class SkillLibrary {
@@ -38,7 +39,8 @@ export class SkillLibrary {
                   const integrity = Boolean(manifest.files?.['SKILL.md'] && manifest.files?.['LICENSE.txt']) && Object.entries(manifest.files as Record<string, string>).every(([name, expected]) => crypto.createHash('sha256').update(fs.readFileSync(safePath(folder, name))).digest('hex') === expected);
                   provenance = { repository: manifest.repository, commit: manifest.commit, license: manifest.license, url: manifest.url, integrity };
                 }
-                result.push({ id: `${source}:${path.relative(root, folder).split(path.sep).join('/')}`, name: field('name') || item.name, description: (field('description') || '').slice(0, 1200), source, file, provenance });
+                const id = `${source}:${path.relative(root, folder).split(path.sep).join('/')}`;
+                result.push({ id, name: field('name') || item.name, description: (field('description') || '').slice(0, 1200), source, file, provenance, recommendedRoles: skillRoutes[id]?.roles, requires: skillRoutes[id]?.requires });
               } catch { /* Skip invalid or escaped skill paths. */ }
             } else walk(folder, depth + 1);
           }
@@ -48,20 +50,24 @@ export class SkillLibrary {
     }
     return result;
   }
-  resolve(id: string) {
-    const list = this.list();
+  resolve(id: string, list = this.list()) {
     const exact = list.find(skill => skill.id === id);
     if (exact) return exact;
     const named = list.filter(skill => skill.name === id);
     if (named.length !== 1) throw new Error(named.length ? `Skill trùng tên; dùng ID đầy đủ: ${id}` : `Không tìm thấy skill: ${id}`);
     return named[0];
   }
-  load(id: string) {
-    const skill = this.resolve(id);
+  load(id: string, catalog?: Skill[]) {
+    const skill = this.resolve(id, catalog);
     if (skill.provenance && !skill.provenance.integrity) throw new Error(`Skill ${id} không khớp checksum nguồn GitHub`);
     if (fs.statSync(skill.file).size > 64000) throw new Error('Skill vượt giới hạn 64 KB');
-    const instructions = fs.readFileSync(skill.file, 'utf8');
-    if (instructions.length > 16000) throw new Error(`Skill ${skill.id} quá dài để nạp; chia thành tài nguyên tham chiếu.`);
+    let instructions = fs.readFileSync(skill.file, 'utf8');
+    if (instructions.length > 16000) {
+      if (!skill.provenance) throw new Error(`Skill ${skill.id} quá dài để nạp; chia thành tài nguyên tham chiếu.`);
+      const lines = instructions.split(/\r?\n/); let excerpt = '', next = 0;
+      while (next < lines.length && excerpt.length + lines[next].length + 1 <= 12000) excerpt += lines[next++] + '\n';
+      instructions = excerpt + `\n[Skill excerpt. Read the remaining SKILL.md with read_skill_resource, startLine=${next + 1}. Do not infer omitted instructions.]`;
+    }
     return { ...skill, instructions };
   }
   resource(id: string, resource: string, startLine = 1, endLine = startLine + 299) {
@@ -78,17 +84,33 @@ export class SkillLibrary {
     const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
     return lines.slice(startLine - 1, endLine).join('\n').slice(0, 30000) + (lines.length > endLine ? `\n[Đọc tiếp từ dòng ${endLine + 1}; tổng ${lines.length} dòng]` : '');
   }
-  search(query: string) {
+  search(query: string, catalog = this.list()) {
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return this.list().map(skill => ({ ...skill, score: terms.reduce((score, term) => score + (skill.name.toLowerCase().includes(term) ? 3 : skill.description.toLowerCase().includes(term) ? 1 : 0), 0) })).filter(skill => !terms.length || skill.score > 0).sort((a, b) => b.score - a.score).slice(0, 20);
+    return catalog.map(skill => ({ ...skill, score: terms.reduce((score, term) => score + (skill.name.toLowerCase().includes(term) ? 3 : skill.description.toLowerCase().includes(term) ? 1 : 0), 0) })).filter(skill => !terms.length || skill.score > 0).sort((a, b) => b.score - a.score).slice(0, 20);
   }
-  select(role: Role, task: string, config?: Partial<Config>, explicit: string[] = []) {
+  select(role: Role, task: string, config?: Partial<Config>, explicit: string[] = [], catalog = this.list()) {
     const profile = roleProfile(role, config);
-    const selected = [...new Set([...profile.skills, ...explicit])].map(id => this.load(id));
-    // Automatic discovery is limited to project skills; user/system skills require explicit selection.
-    if (profile.autoSkills) for (const skill of this.search(task).filter(skill => ['project', 'workspace'].includes(skill.source) && skill.score >= 3)) {
+    const selected = [...new Set([...profile.skills, ...explicit])].map(id => this.load(id, catalog));
+    // Add relevant, pinned role recommendations without overflowing the prompt budget.
+    if (profile.autoSkills) {
+      const recommended = catalog.map(skill => ({ skill, score: recommendationScore(skill.id, role, task) }))
+        .filter(item => item.score > 0 && item.skill.provenance?.integrity).sort((a, b) => b.score - a.score);
+      let added = 0;
+      for (const { skill } of recommended) {
+        if (added >= 2 || selected.length >= 8) break;
+        if (selected.some(item => item.id === skill.id)) continue;
+        const loaded = this.load(skill.id, catalog);
+        if (selected.reduce((n, item) => n + item.instructions.length, 0) + loaded.instructions.length > 24000) continue;
+        selected.push(loaded); added++;
+      }
+    }
+    // User/system skills still require explicit selection.
+    if (profile.autoSkills) for (const skill of this.search(task, catalog).filter(skill => ['project', 'workspace'].includes(skill.source) && skill.score >= 3)) {
       if (selected.length >= 4) break;
-      if (!selected.some(item => item.id === skill.id)) selected.push(this.load(skill.id));
+      if (!selected.some(item => item.id === skill.id)) {
+        const loaded = this.load(skill.id, catalog);
+        if (selected.reduce((n, item) => n + item.instructions.length, 0) + loaded.instructions.length <= 24000) selected.push(loaded);
+      }
     }
     if (selected.reduce((n, skill) => n + skill.instructions.length, 0) > 24000) throw new Error('Tổng skill vượt ngân sách 24.000 ký tự; chọn ít skill hơn.');
     return selected;

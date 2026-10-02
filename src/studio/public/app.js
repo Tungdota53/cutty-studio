@@ -234,7 +234,7 @@ function showSkills(skills) {
   for (const skill of skills.slice(0, 20)) {
     const row = document.createElement('p');
     const name = document.createElement('strong'); name.textContent = skill.name;
-    const detail = document.createElement('small'); detail.textContent = `${skill.id} · ${skill.description}`;
+      const detail = document.createElement('small'); detail.textContent = `${skill.id} · ${skill.description}${skill.recommendedRoles?.length ? '\nVai phù hợp: ' + skill.recommendedRoles.join(', ') : ''}${skill.requires?.length ? '\nCần: ' + skill.requires.join(', ') : ''}`;
     if (skill.provenance) {
       const source = document.createElement('a'); source.href = skill.provenance.url; source.target = '_blank'; source.rel = 'noopener noreferrer';
       source.textContent = `${skill.provenance.repository} · ${skill.provenance.license} · ${skill.provenance.commit.slice(0, 8)} · ${skill.provenance.integrity ? 'Checksum khớp' : 'Checksum không khớp'}`;
@@ -262,7 +262,7 @@ function showTeam(data) {
     const instructionsLabel = document.createElement('label'); instructionsLabel.className = 'field'; instructionsLabel.textContent = 'Hướng dẫn cho vai';
     const instructions = document.createElement('textarea'); instructions.dataset.field = 'instructions'; instructions.value = role.instructions; instructions.maxLength = 6000; instructions.rows = 2; instructionsLabel.append(instructions);
     const autoLabel = document.createElement('label'); autoLabel.className = 'skill-option';
-    const auto = document.createElement('input'); auto.type = 'checkbox'; auto.dataset.field = 'autoSkills'; auto.checked = role.autoSkills; autoLabel.append(auto, document.createTextNode('Tự chọn thêm skill của dự án theo nhiệm vụ'));
+    const auto = document.createElement('input'); auto.type = 'checkbox'; auto.dataset.field = 'autoSkills'; auto.checked = role.autoSkills; autoLabel.append(auto, document.createTextNode('Tự nạp skill theo vai và nhiệm vụ (GitHub đã kiểm tra nguồn + dự án)'));
     const choices = document.createElement('div'); choices.className = 'skill-choices';
     for (const skill of [...data.skills].sort((a, b) => Number(b.source === 'builtin') - Number(a.source === 'builtin'))) {
       const label = document.createElement('label'); label.className = 'skill-option'; label.title = skill.description;
@@ -337,6 +337,12 @@ function showNamedAgents(data) {
   $('chat-agent').value = [...$('chat-agent').options].some(option => option.value === selected) ? selected : '';
 }
 $('add-agent').onclick = () => { if (!teamData || busy) return; const card = namedAgentCard({ id: 'agent-' + crypto.randomUUID().slice(0, 8), name: 'Agent mới', role: 'coder', model: '', instructions: '', skills: [], enabled: true }, teamData); card.open = true; $('named-agent-cards').append(card); };
+  $('add-specialists').onclick = () => {
+    if (!teamData || busy) return;
+    const existing = new Set([...$('named-agent-cards').children].map(card => card.dataset.agent));
+    for (const preset of teamData.presets || []) if (!existing.has(preset.id)) $('named-agent-cards').append(namedAgentCard(preset, teamData));
+    $('team-status').textContent = 'Đã thêm agent chuyên môn còn thiếu. Chọn model rồi lưu phân vai.';
+  };
 $('fetch-models').onclick = () => send({ type: 'get_models' });
 connect();
 

@@ -1,0 +1,12 @@
+{
+  "repository": "obra/superpowers",
+  "commit": "8ca22dba9a94f28898bbce59f2537ff4d87c747d",
+  "prefix": "skills",
+  "license": "MIT",
+  "path": "skills/verification-before-completion",
+  "url": "https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/verification-before-completion",
+  "files": {
+    "LICENSE.txt": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+    "SKILL.md": "2befe7fc55bcadaa3d97dd9e8efeb633d2561c0ebe74c5a8b17c4d9e7e4520b3"
+  }
+}

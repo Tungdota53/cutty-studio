@@ -1,0 +1,14 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/testing-handbook-skills/skills/coverage-analysis",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/testing-handbook-skills/skills/coverage-analysis",
+  "files": {
+    "agents/openai.yaml": "8d2c04a218973d10ece0de787836ade740f6c6a72a5dbbe471c472e58912e72a",
+    "assets/trail-of-bits-mark.svg": "4bf74c789b38dcf6ad762c136b6832363d27ae19fbaa9a18ec18d66ecce6ca05",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "SKILL.md": "9f71cfaffec44f159aa333924a25cdbe3eebd221cc7c0b0175fb93794d3ecacc"
+  }
+}

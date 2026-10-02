@@ -1,0 +1,13 @@
+{
+  "repository": "obra/superpowers",
+  "commit": "8ca22dba9a94f28898bbce59f2537ff4d87c747d",
+  "prefix": "skills",
+  "license": "MIT",
+  "path": "skills/requesting-code-review",
+  "url": "https://github.com/obra/superpowers/tree/8ca22dba9a94f28898bbce59f2537ff4d87c747d/skills/requesting-code-review",
+  "files": {
+    "code-reviewer.md": "82e370be6b3447523816286195571e4216ba56ba1ad6ad0e87862294c4c78dcb",
+    "LICENSE.txt": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+    "SKILL.md": "cfcee1b06774e7c0517f1e09be1a11f2d5680257072723e709ddbcf7e08b795a"
+  }
+}

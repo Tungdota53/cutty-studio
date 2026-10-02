@@ -2,8 +2,8 @@
   "repository": "anthropics/skills",
   "commit": "8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4",
   "prefix": "skills",
-  "path": "skills/mcp-builder",
   "license": "Apache-2.0",
+  "path": "skills/mcp-builder",
   "url": "https://github.com/anthropics/skills/tree/8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4/skills/mcp-builder",
   "files": {
     "LICENSE.txt": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",

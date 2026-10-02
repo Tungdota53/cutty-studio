@@ -15,6 +15,7 @@ export interface AgentMemoryOptions {
   agentConfig?: Partial<Config>;
   skills?: string[];
   skillWorkspace?: string;
+  skillTask?: string;
   onSkills?: (skills: Skill[]) => void;
   onContext?: (event: ContextEvent) => void;
   checkpoint?: (state: ConversationState) => void;
@@ -32,11 +33,11 @@ export class Agent {
     const config = memoryOptions.agentConfig || this.client.config || {};
     const profile = roleProfile(this.role, config);
     const assigned = assignedAgent(config, memoryOptions.namedAgentId, this.role);
-    const skills = library.select(this.role, task, config, [...(memoryOptions.skills || []), ...(assigned?.skills || [])]);
+    const skills = library.select(this.role, memoryOptions.skillTask ?? task, config, [...(memoryOptions.skills || []), ...(assigned?.skills || [])]);
     memoryOptions.onSkills?.(skills);
     this.log?.emit('skills_loaded', { agentId: this.id, role: this.role, skills: skills.map(skill => skill.id) });
     const baseSystem = systemPrompt(this.role, this.root) + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + (assigned ? `\nAssigned agent: ${assigned.name} (${assigned.id})\n${assigned.instructions}\n` : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
-    const skillSystem = () => baseSystem + skills.map(skill => 'Skill ' + skill.id + ':\n' + skill.instructions).join('\n\n');
+    const skillSystem = () => baseSystem + skills.map(skill => `Skill ${skill.id}:\nSkill file: ${skill.file}\nRequired tools/resources: ${(skill.requires || []).join(', ') || 'See instructions'}. Verify availability before use; report a missing prerequisite as a limitation. Resolve upstream .claude paths or CLAUDE_PLUGIN_ROOT references against this skill file's directory. Read references using read_skill_resource.\n${skill.instructions}`).join('\n\n');
     let system = skillSystem();
     const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name));
     const user: Message = { role: 'user', content: task };

@@ -1,0 +1,14 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/testing-handbook-skills/skills/harness-writing",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/testing-handbook-skills/skills/harness-writing",
+  "files": {
+    "agents/openai.yaml": "ec1c365b051bfbcca2f3495c8eab440939d890064f6e20d51d4650edd649723c",
+    "assets/trail-of-bits-mark.svg": "4bf74c789b38dcf6ad762c136b6832363d27ae19fbaa9a18ec18d66ecce6ca05",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "SKILL.md": "8efda12f4ab61a7eef4daae88affc7649695d8db5fb2c2a33a78dab2a3fe36c0"
+  }
+}

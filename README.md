@@ -2,6 +2,18 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Team chuyên môn và thư viện skill — 0.5.0
+
+Teamwork áp dụng cách giao việc có briefing, phạm vi tệp, dependency, tiến độ và handoff riêng cho từng agent. Bộ mặc định có 12 agent trên 7 vai quyền công cụ: Frontend, Backend, Web Tester, Security Reviewer, Planner, Assistant, Explorer, UI/UX Designer, Test Writer, Challenger, Independent Auditor và Acceptance Judge. Mỗi agent chọn model riêng trong **Thiết lập agent**. Dự án đã lưu roster giữ cấu hình hiện tại; nút **Thêm team chuyên môn** bổ sung agent còn thiếu trước khi bạn lưu.
+
+Thư viện có **28 skill GitHub + 7 skill nội bộ**. Ngoài Anthropic/OpenAI, bổ sung [Trail of Bits](https://github.com/trailofbits/skills) (CC-BY-SA-4.0), [Superpowers](https://github.com/obra/superpowers) (MIT) và [UI UX Pro Max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) (MIT). Skill nguyên bản, tài nguyên và giấy phép được giữ cùng manifest ghim commit/SHA-256. Đây là xác minh nguồn, không phải chứng chỉ chất lượng. Xem [danh mục và phân vai](docs/skills-catalog.md).
+
+Khi bật tự chọn skill, agent nạp tối đa hai skill GitHub liên quan tới vai và nội dung nhiệm vụ, trong ngân sách tổng 24.000 ký tự. Skill GitHub dài được nạp phần đầu có thông báo rõ và đọc tiếp bằng `read_skill_resource`; các skill người dùng vẫn cần chọn rõ ràng. Công cụ bên ngoài như Python/Playwright, Semgrep và CodeQL phải có trong môi trường; script của skill không tự chạy khi cài.
+
+Công cụ chạy lệnh/test đã cập nhật `cancelSignal` cho Execa để hoạt động với tín hiệu hủy của agent. Mỗi phiên lưu `PROJECT.md`, `plan.md`, `GATE_STATUS.md` và thư mục `agents/<id>` chứa `BRIEFING.md`, `DISPATCH.md`, `progress.md`, `handoff.md` trong `.vibe/sessions/<session>`. Tệp `expectedFiles` là phạm vi ghi trực tiếp của coder; `write_file`/`edit_file` chặn tệp ngoài danh sách. Lệnh shell chưa có sandbox theo tệp. Agent chỉ có hướng dẫn viết test dùng quyền coder, không cấp quyền ghi cho tester/reviewer.
+
+Nghiệm thu hiển thị **PASS / FAIL / UNVERIFIED**: mỗi coder cần tester phụ thuộc có lệnh thực thi exit 0 và reviewer phụ thuộc đọc mã/diff, trả JSON PASS không có finding. Kết quả kiểm tra thất bại hoặc review FAIL khiến gate FAIL; thiếu bằng chứng thì UNVERIFIED. Lệnh exit 0 ghi nhận thực thi, không tự chứng minh độ đầy đủ của test; reviewer vẫn cần đánh giá assertion. Task hoàn thành không tự đồng nghĩa đã xác minh. Tester/reviewer theo một dependency worktree sẽ kiểm tra chính worktree đó; nhiều worktree chưa tích hợp báo lỗi rõ thay vì kiểm tra nhầm thư mục gốc.
+
 ## Agent riêng và skill GitHub — 0.4.0
 
 Bản 0.4.1 sửa lỗi Teamwork trong thư mục chưa có Git (`fatal: not a git repository`). App phát hiện thư mục thường, repo chưa có commit đầu tiên hoặc thiếu Git và chạy trực tiếp, tuần tự trong workspace. Không tự khởi tạo Git hay tạo commit. Repo Git sạch có commit vẫn dùng worktree; các thay đổi nguồn chưa commit vẫn được bảo vệ. Dữ liệu do app tạo trong `.vibe` không làm repo bị nhận nhầm là dirty. Tác vụ bị chặn lưu rõ nguyên nhân/phụ thuộc.
@@ -22,9 +34,9 @@ Xem giấy phép tại `src/vendor-skills/<nguồn>/<skill>/LICENSE.txt`. Script
 Mở **Nhóm agent** để cấu hình bảy vai: điều phối, lập kế hoạch, lập trình, kiểm thử, rà soát, đánh giá và trợ lý. Mỗi vai có hướng dẫn, model riêng, danh sách skill và tùy chọn tự chọn thêm skill theo nhiệm vụ. Cấu hình lưu tại `.vibe/config.json` của dự án. Planner phân vai và skill cho từng task; task và agent có ID riêng, cùng trạng thái và danh sách skill đã nạp.
 
 - Có sẵn bảy skill cho bảy vai, đóng gói trong cả Setup và Portable.
-- Tìm skill trong `.agents/skills/<tên>/SKILL.md`, `.vibe/skills/<tên>/SKILL.md` và `~/.codex/skills`. Tự nạp thêm chỉ áp dụng cho skill của dự án; skill người dùng phải được chọn rõ ràng.
+- Tìm skill trong `.agents/skills/<tên>/SKILL.md`, `.vibe/skills/<tên>/SKILL.md` và `~/.codex/skills`. Từ 0.5.0, tự nạp skill dự án và skill GitHub đã ghim theo vai/chủ đề; skill người dùng phải được chọn rõ ràng.
 - Công cụ `search_skills`, `load_skill`, `read_skill_resource` cho phép agent tìm hướng dẫn, nạp vào context và đọc tài nguyên tương đối trong thư mục skill. Skill không cài thêm plugin hoặc cung cấp những công cụ mà app chưa có.
-- Các skill được chọn được đưa vào system context của agent, giữ qua các lượt nén trong lần thực hiện task. Giới hạn mỗi skill 16.000 ký tự, tổng 24.000 ký tự; skill không hợp lệ báo lỗi thay vì bị cắt âm thầm.
+- Các skill được chọn được đưa vào system context của agent, giữ qua các lượt nén trong lần thực hiện task. Ngân sách tổng 24.000 ký tự; skill GitHub dài có phần đầu và chỉ dẫn đọc tiếp, skill cục bộ vượt 16.000 ký tự báo lỗi.
 - Planner, reviewer, judge và orchestrator chỉ có công cụ đọc/tìm kiếm; chặn công cụ sửa tệp, chạy lệnh và chạy test ở cả schema và lúc thực thi. Tester được chạy test/lệnh nhưng bị chặn công cụ sửa tệp. Lệnh shell vẫn có thể tạo hoặc thay đổi tệp, nên quyền của tester không phải sandbox chỉ đọc.
 - CLI: `/roles` xem phân vai, `/skills <chủ đề>` tìm skill. Model đã gán cho vai được thử trước model dự phòng.
 
@@ -48,8 +60,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.4.1-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.4.1-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.5.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.5.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

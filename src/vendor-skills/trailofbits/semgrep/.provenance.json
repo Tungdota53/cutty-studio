@@ -1,0 +1,20 @@
+{
+  "repository": "trailofbits/skills",
+  "commit": "82fe8226252622fa807643bdca1710901198553a",
+  "prefix": "plugins",
+  "license": "CC-BY-SA-4.0",
+  "path": "plugins/static-analysis/skills/semgrep",
+  "url": "https://github.com/trailofbits/skills/tree/82fe8226252622fa807643bdca1710901198553a/plugins/static-analysis/skills/semgrep",
+  "files": {
+    "agents/openai.yaml": "b200a52900687f8176cb5d8230a29e5e80c8317337efcdcf87754e892129cd89",
+    "assets/trail-of-bits-mark.svg": "4bf74c789b38dcf6ad762c136b6832363d27ae19fbaa9a18ec18d66ecce6ca05",
+    "LICENSE.txt": "7abe19ec9bb73b36141b999b861d24ad855e808bafe0f81e84cce28556f6c297",
+    "references/rulesets.md": "e641bf7b2f32cd81b2623759f72a560dd96f6747f1295157f2984fe8ebac3f74",
+    "references/scan-modes.md": "99ed0ffb9e9ee68bcb175da469f1310f28f96e356c69c65918a0afc430027d3d",
+    "scripts/merge_sarif.py": "8b6094e18a0e4d36250c72c81903edac914552df7eb2a7eebd1ac449d105f7ba",
+    "scripts/run-scans.sh": "ac3d815dbd5cdfa0419596411058378ab659bd243c7dc87495114e773aa40347",
+    "scripts/test_merge_sarif.py": "8f235bface6ff37f813c1a44b2a6c2edf273cd548b95b770c362f0a443473c75",
+    "SKILL.md": "52162605593f871cf45f48f9cf00b7c2d7e0759ccb7507981088442b7cc5d76c",
+    "workflows/scan-workflow.md": "fef44f3abb2ebc050e96daaefa71d9b94a0d0082278d6d958f366dff04d9064d"
+  }
+}

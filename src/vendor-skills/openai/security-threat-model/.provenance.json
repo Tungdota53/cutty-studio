@@ -2,8 +2,8 @@
   "repository": "openai/skills",
   "commit": "49f948faa9258a0c61caceaf225e179651397431",
   "prefix": "skills/.curated",
-  "path": "skills/.curated/security-threat-model",
   "license": "Apache-2.0",
+  "path": "skills/.curated/security-threat-model",
   "url": "https://github.com/openai/skills/tree/49f948faa9258a0c61caceaf225e179651397431/skills/.curated/security-threat-model",
   "files": {
     "agents/openai.yaml": "3319b59736312abceca614e341c0e59cae47263e3b58a22b2b5ddf1e5fc8c227",
