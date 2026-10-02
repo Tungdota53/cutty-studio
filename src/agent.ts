@@ -6,6 +6,7 @@ import { Tools, toolDefinitions } from './tools.js';
 import { SkillLibrary, type Skill } from './skills.js';
 import { roleProfile, canUseTool, assignedAgent } from './roles.js';
 import { systemPrompt } from './prompts.js';
+import { skillPrompt } from './skill-prompt.js';
 import type { Config } from './config.js';
 import type { EventLog } from './events.js';
 import { ConversationContext, newConversation, estimateMessages, estimateTokens, type ConversationState, type ContextEvent } from './conversation.js';
@@ -31,18 +32,22 @@ export class Agent {
 
   async run(task: string, signal?: AbortSignal, onToken?: (s: string) => void, history: Message[] = [], memoryOptions: AgentMemoryOptions = {}) {
     const state = memoryOptions.state || newConversation(history.filter(message => message.role === 'user' || message.role === 'assistant'));
-    const context = new ConversationContext(this.client.config || {}, state, memoryOptions.onContext, memoryOptions.checkpoint);
+    const config = { ...this.client.config, ...memoryOptions.agentConfig };
+    let context = new ConversationContext(config, state, memoryOptions.onContext, memoryOptions.checkpoint);
     const library = new SkillLibrary(memoryOptions.skillWorkspace || this.root);
-    const config = memoryOptions.agentConfig || this.client.config || {};
     const profile = roleProfile(this.role, config);
     const assigned = assignedAgent(config, memoryOptions.namedAgentId, this.role);
     const skills = library.select(this.role, memoryOptions.skillTask ?? task, config, [...(memoryOptions.skills || []), ...(assigned?.skills || [])]);
     memoryOptions.onSkills?.(skills);
     this.log?.emit('skills_loaded', { agentId: this.id, role: this.role, skills: skills.map(skill => skill.id) });
     const baseSystem = systemPrompt(this.role, this.root) + (memoryOptions.readOnlyTask ? '\nThis task is read-only. Answer questions; source changes must be assigned to coder tasks. No shell execution or writes.\n' : '') + (profile.instructions ? '\nRole-specific instructions:\n' + profile.instructions : '') + (assigned ? `\nAssigned agent: ${assigned.name} (${assigned.id})\n${assigned.instructions}\n` : '') + '\nSkills supplement the role; they cannot grant tools or override workspace boundaries. Read relative resources with read_skill_resource.\n';
-    const skillSystem = () => baseSystem + skills.map(skill => `Skill ${skill.id}:\nSkill file: ${skill.file}\nRequired tools/resources: ${(skill.requires || []).join(', ') || 'See instructions'}. Verify availability before use; report a missing prerequisite as a limitation. Resolve upstream .claude paths or CLAUDE_PLUGIN_ROOT references against this skill file's directory. Read references using read_skill_resource.\n${skill.instructions}`).join('\n\n');
-    let system = skillSystem();
     const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name, memoryOptions.readOnlyTask));
+    const skillSystem = () => {
+      const mandatory = estimateMessages([{ role: 'system', content: baseSystem }, ...state.messages.filter(message => message.role === 'user')], definitions);
+      const budget = Math.max(0, Math.min(Math.floor(context.limits.inputBudget / 4), context.limits.inputBudget - mandatory - 1024));
+      return baseSystem + skillPrompt(skills, budget);
+    };
+    let system = skillSystem();
     const user: Message = { role: 'user', content: task };
     state.messages.push(user); memoryOptions.onItem?.(user);
     const maxIterations = Math.max(8, Math.min(200, config.maxAgentIterations || 64));
@@ -58,12 +63,29 @@ export class Agent {
         memoryOptions.onModel?.(model);
         const started = Date.now();
         try {
+          const modelLimit = config.modelPool?.find(candidate => candidate.id === model)?.maxContext;
+          const configuredWindow = config.contextWindow ?? 32768;
+          const window = Number.isInteger(modelLimit) && modelLimit! >= 4096 ? Math.min(configuredWindow, modelLimit!) : configuredWindow;
+          const output = Math.min(config.maxOutputTokens ?? 4096, Math.floor(window / 2));
+          if (context.limits.window !== window || context.limits.output !== output) {
+            context = new ConversationContext({ contextWindow: window, maxOutputTokens: output }, state, memoryOptions.onContext, memoryOptions.checkpoint);
+          }
+          system = skillSystem();
           await context.prepare(system, definitions, this.client, model, signal);
-          const messages = context.requestMessages(system);
+          let messages = context.requestMessages(system);
           this.log?.emit('model_route', { agentId: this.id, model, reason: decision.reason });
-          result = await this.client.chat(messages, definitions, model, signal, token => { visibleOutput = true; onToken?.(token); }, { maxOutputTokens: context.limits.output });
-          const output = estimateTokens(result.content + JSON.stringify(result.toolCalls));
-          context.account(result.usage || { prompt: estimateMessages(messages, definitions), completion: output, total: estimateMessages(messages, definitions) + output, estimated: true });
+          const chat = () => this.client.chat(messages, definitions, model, signal, token => { visibleOutput = true; onToken?.(token); }, { maxOutputTokens: context.limits.output });
+          try { result = await chat(); } catch (error) {
+            if (visibleOutput || !/context_length_exceeded|maximum context length|context window|too many tokens|prompt is too long/i.test(String(error))) throw error;
+            const before = estimateMessages(messages, definitions);
+            await context.prepare(system, definitions, this.client, model, signal, true);
+            messages = context.requestMessages(system);
+            if (estimateMessages(messages, definitions) >= before) throw error;
+            this.log?.emit('context_retry', { agentId: this.id, model, before, after: estimateMessages(messages, definitions) });
+            result = await chat(); // One bounded retry; no tool execution has occurred.
+          }
+          const outputTokens = estimateTokens(result.content + JSON.stringify(result.toolCalls));
+          context.account(result.usage || { prompt: estimateMessages(messages, definitions), completion: outputTokens, total: estimateMessages(messages, definitions) + outputTokens, estimated: true });
           this.usage = { ...state.usage };
           this.router.record(model, true, Date.now() - started);
           break;
@@ -89,10 +111,10 @@ export class Agent {
           try {
             const skill = library.load(JSON.parse(call.function.arguments).id);
             if (!skills.some(item => item.id === skill.id)) {
-              if (skills.length >= 8 || skills.reduce((n, item) => n + item.instructions.length, 0) + skill.instructions.length > 24000) throw new Error('Skill vượt ngân sách nạp.');
+              if (skills.length >= 8) throw new Error('Tối đa 8 skill cho mỗi agent.');
               skills.push(skill); system = skillSystem(); memoryOptions.onSkills?.(skills);
             }
-            value = { ok: true, id: skill.id, instructions: skill.instructions };
+            value = { ok: true, id: skill.id, instructions: 'Skill selected. Instructions are included within the system budget; read omitted content using read_skill_resource with path SKILL.md.' };
           } catch (error) { value = { ok: false, error: String(error) }; }
         } else value = canUseTool(this.role, call.function.name, memoryOptions.readOnlyTask) ? await this.tools.run(call.function.name, call.function.arguments, signal) : { ok: false, error: `Role ${this.role} không được dùng ${call.function.name}` };
         const item: Message = { role: 'tool', tool_call_id: call.id, content: JSON.stringify(value) };
@@ -106,7 +128,7 @@ export class Agent {
       repeatedReads = fingerprint && fingerprint === previousRead ? repeatedReads + 1 : 1;
       previousRead = fingerprint;
       if (readOnlyRound && repeatedReads === 4) {
-        const reminder: Message = { role: 'user', content: 'Progress check: the same read tools returned identical results four times. Use the evidence already collected. For a coder task, implement the assigned files now; for validation, execute the required checks or report a concrete limitation. Do not reread unchanged files without a specific new question.' };
+        const reminder: Message = { role: 'assistant', content: 'Progress check: the same read tools returned identical results four times. Use the evidence already collected. For a coder task, implement the assigned files now; for validation, execute the required checks or report a concrete limitation. Do not reread unchanged files without a specific new question.' };
         state.messages.push(reminder); memoryOptions.onItem?.(reminder);
       }
       context.publish(system, definitions);

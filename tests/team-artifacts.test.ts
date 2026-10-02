@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { qualityGate, recordEvidence, type TaskEvidence } from '../src/team-artifacts.js';
+import { executionDiagnosis, qualityGate, recordEvidence, type TaskEvidence } from '../src/team-artifacts.js';
 import { parseTeamPlan } from '../src/teamwork.js';
 
 describe('Independent teamwork evidence', () => {
@@ -22,5 +22,46 @@ describe('Independent teamwork evidence', () => {
     recordEvidence(evidence, { role: 'tool', tool_call_id: 'read', content: JSON.stringify({ ok: true, output: 'source' }) }, calls);
     recordEvidence(evidence, { role: 'tool', tool_call_id: 'check', content: JSON.stringify({ ok: true, output: 'exit=1\nfailed' }) }, calls);
     expect(evidence).toMatchObject({ inspected: true, successfulChecks: 1, failedChecks: 1 });
+  });
+  it('reports context failures before downstream blocked checks without weakening acceptance', () => {
+    const tasks = parseTeamPlan(JSON.stringify({ tasks: [
+      { id: 'code', role: 'coder', title: 'Code' },
+      { id: 'test', role: 'tester', title: 'Test', dependencies: ['code'], verificationCommands: ['npm test'] },
+      { id: 'review', role: 'reviewer', title: 'Review', dependencies: ['test'] },
+    ] }));
+    tasks[0].status = 'failed'; tasks[0].error = 'Context budget exhausted';
+    tasks[1].status = tasks[2].status = 'blocked';
+    const gate = qualityGate(tasks, new Map());
+    expect(gate.verdict).toBe('FAIL');
+    expect(gate.reasons[0]).toBe('code: Context budget exhausted');
+    expect(gate.reasons).toHaveLength(3);
+    expect(gate.diagnosis.blocked).toEqual([
+      { taskId: 'test', blockedBy: ['code'], dependencies: ['code'] },
+      { taskId: 'review', blockedBy: ['code'], dependencies: ['test'] },
+    ]);
+    tasks.forEach(task => { task.status = 'completed'; });
+    expect(qualityGate(tasks, new Map()).verdict).toBe('UNVERIFIED');
+  });
+  it('handles dependency cycles and cancellation when identifying blocked roots', () => {
+    const tasks = parseTeamPlan(JSON.stringify({ tasks: [
+      { id: 'code', role: 'coder', title: 'Code' },
+      { id: 'test', role: 'tester', title: 'Test', dependencies: ['code'] },
+    ] }));
+    tasks[0].status = 'cancelled'; tasks[1].status = 'blocked';
+    expect(executionDiagnosis(tasks).blocked[0].blockedBy).toEqual(['code']);
+    tasks[0].status = 'blocked'; tasks[0].dependencies = ['test'];
+    expect(executionDiagnosis(tasks).blocked[0].blockedBy).toEqual([]);
+  });
+  it('accepts Windows execution headers but never output-body exit claims or malformed payloads', () => {
+    const proof: TaskEvidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
+    const calls = new Map([['check', 'run_tests']]);
+    const tool = (content: string) => recordEvidence(proof, { role: 'tool', tool_call_id: 'check', content }, calls);
+    tool(JSON.stringify({ ok: true, output: 'command=npm test\r\nexit=0\r\npassed' }));
+    expect(proof.checks?.[0].command).toBe('npm test');
+    tool(JSON.stringify({ ok: true, output: 'exit=undefined\nstdout:\nexit=0\n' }));
+    tool(JSON.stringify({ ok: true, output: 42 }));
+    tool('null');
+    expect(proof.successfulChecks).toBe(1);
+    expect(proof.toolErrors).toBe(1);
   });
 });

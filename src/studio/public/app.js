@@ -170,7 +170,7 @@ function connect() {
       case 'context_stats': if (msg.sessionId === currentSession) showContext(msg.stats); break;
       case 'memory_summary': if (msg.sessionId === currentSession) $('context-summary').textContent = msg.summary || 'Chưa cần nén ngữ cảnh.'; break;
       case 'compaction_start': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tóm tắt ngữ cảnh cũ…'; log('Đang nén ngữ cảnh để tiếp tục cuộc trò chuyện.'); } break;
-      case 'compaction_end': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tiếp tục với ngữ cảnh đã nén…'; log(`Đã nén ngữ cảnh · lần ${msg.compactions}.`); } break;
+      case 'compaction_end': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tiếp tục…'; log(msg.skipped ? 'Giữ nguyên ngữ cảnh vì bản tóm tắt không ngắn hơn.' : `Đã nén ngữ cảnh · lần ${msg.compactions}${msg.mode === 'extractive' ? ' · dùng trích đoạn dự phòng, cần kiểm tra lại chi tiết' : ''}${msg.before != null ? ` · ${formatTokens(msg.before)} → ${formatTokens(msg.after)} token ước tính` : ''}.`); } break;
       case 'run_start': setBusy(true); break;
       case 'run_end': setBusy(false); TeamMap.end(); approvalQueue.length = 0; clearTimeout(approvalsTimer); nextApproval(); send({ type: 'get_sessions' }); send({ type: 'get_diff' }); break;
       case 'stream_chunk':

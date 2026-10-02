@@ -112,7 +112,7 @@ export class SkillLibrary {
         if (selected.reduce((n, item) => n + item.instructions.length, 0) + loaded.instructions.length <= 24000) selected.push(loaded);
       }
     }
-    if (selected.reduce((n, skill) => n + skill.instructions.length, 0) > 24000) throw new Error('Tổng skill vượt ngân sách 24.000 ký tự; chọn ít skill hơn.');
+    if (selected.length > 8) throw new Error('Tối đa 8 skill cho mỗi agent; chọn lại các skill cần thiết.');
     return selected;
   }
 }

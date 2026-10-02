@@ -59,12 +59,17 @@ describe('Persistent context and compaction', () => {
     const store = new Store(path.join(c.workspace, '.vibe')); stores.push(store); store.saveConversation('chat-long', state);
     expect(store.conversation('chat-long').summary).toBe(state.summary);
   });
-  it('never discards history when summarization fails', async () => {
-    const c = config(), state = newConversation([{ role: 'user', content: 'Original' }, { role: 'assistant', content: 'Old output' }, { role: 'user', content: 'More' }, { role: 'assistant', content: 'Last answer' }]);
-    const before = structuredClone(state);
+  it('falls back to labeled excerpts without modifying the archived transcript when summarization fails', async () => {
+    const c = config(), state = newConversation([{ role: 'user', content: 'Original' }, { role: 'assistant', content: 'Old output '.repeat(1500) }, { role: 'user', content: 'More' }, { role: 'assistant', content: 'Last answer' }]);
+    const store = new Store(path.join(c.workspace, '.vibe')); stores.push(store);
+    const before = structuredClone(state.messages); before.forEach(item => store.archiveItem('fallback', item));
     const client = { chat: vi.fn(async () => { throw new Error('Summary service unavailable'); }) } as unknown as ModelClient;
-    await expect(new ConversationContext(c, state).prepare('System', [], client, c.model, undefined, true)).rejects.toThrow('unavailable');
-    expect(state).toEqual(before);
+    await new ConversationContext(c, state).prepare('System', [], client, c.model, undefined, true);
+    expect(state.summary).toContain('Extractive fallback');
+    expect(state.summary).toContain('Old output');
+    expect(state.messages.filter(item => item.role === 'user')).toEqual(before.filter(item => item.role === 'user'));
+    expect(store.items('fallback')).toEqual(before);
+    expect(state.lastCompaction?.mode).toBe('extractive');
   });
   it('does not send an oversized latest user request or silently truncate it', async () => {
     const c = config(), latest = 'Latest complete request '.repeat(3000), state = newConversation([{ role: 'user', content: latest }]);

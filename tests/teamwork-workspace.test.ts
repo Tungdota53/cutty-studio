@@ -73,6 +73,21 @@ describe('Teamwork workspace mode', () => {
     expect(events.filter(event=>event.type==='session_end')).toHaveLength(1);
     expect(team.tasks).toHaveLength(0);
   });
+  it('repairs impossible read-only verification requirements before dispatch', async () => {
+    const dir = root(); let repaired = false, workers = 0;
+    const { team } = runner(dir, [{ id: 'survey', title: 'Survey', role: 'planner', verificationCommands: ['node -v'] }], async messages => {
+      const request = messages.findLast(message => message.role === 'user')?.content || '';
+      if (request.startsWith('Repair the previous plan')) {
+        repaired = request.includes('cannot execute verificationCommands');
+        // A model can choose to answer a question without inventing shell checks.
+        return { content: JSON.stringify({ tasks: [{ title: 'Answer question', role: 'general' }] }), toolCalls: [] };
+      }
+      workers++; return { content: 'answer', toolCalls: [] };
+    });
+    const result = await team.run('Answer a question', () => {});
+    expect(repaired).toBe(true); expect(workers).toBe(1);
+    expect(result.status).toBe('completed');
+  });
   it('reports a failed durable checkpoint even after the last task completed',async()=>{
     const dir=root(); const {team,store}=runner(dir,[{id:'task',role:'general',title:'Answer'}],async()=>({content:'answer',toolCalls:[]}));
     const original=fs.writeFileSync;

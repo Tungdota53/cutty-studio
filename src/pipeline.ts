@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Task } from './types.js';
-import type { TaskEvidence } from './team-artifacts.js';
+import { executionDiagnosis, type TaskEvidence } from './team-artifacts.js';
 import { taskPhase } from './team-protocol.js';
 import { redact } from './security.js';
 
@@ -43,12 +43,12 @@ export class Pipeline {
       completed: tasks.filter(task => task.status === 'completed').length, total: tasks.length,
       successfulChecks: checks.filter(check => check.exitCode === 0).length,
       failedChecks: checks.filter(check => check.exitCode !== 0).length,
-      repairs: this.repairs, diagnostics: inspectPlan(tasks), gate,
+      repairs: this.repairs, diagnostics: inspectPlan(tasks), execution: executionDiagnosis(tasks), gate,
       tasks: tasks.map(task => {
         const proof = evidence.get(task.id);
         return {
           id: task.id, title: task.title, phase: taskPhase(task), status: task.status, model: task.model,
-          dependencies: task.dependencies, attempt: task.retries || 0,
+          dependencies: task.dependencies, attempt: task.retries || 0, error: task.error || null,
           criteria: task.acceptanceCriteria || [], requiredCommands: task.verificationCommands || [],
           evidence: proof ? { inspected: proof.inspected, stale: proof.stale || false, checks: (proof.checks || []).map(check => ({ command: check.command, exitCode: check.exitCode, excerpt: check.excerpt.slice(0, 800) })) } : null
         };

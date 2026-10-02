@@ -2,6 +2,13 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Sửa phục hồi context — 0.10.1
+
+- Nén được các lượt gọi công cụ lớn đã hoàn tất; giữ nguyên yêu cầu đầu/cuối, không chạy lại thao tác ghi file. Khi model tóm tắt lỗi/rỗng, dùng trích đoạn dự phòng có nhãn và báo rõ trên giao diện.
+- Skill được nạp theo ngân sách model; bàn giao tính cả metadata và Unicode. Planner dùng danh mục skill liên quan thay vì chèn toàn bộ thư viện.
+- Kế hoạch giao lệnh shell cho role chỉ đọc phải được sửa trước khi chạy. Pipeline phân biệt lỗi gốc với các tác vụ chưa chạy do bị chặn.
+- Giới hạn, cơ chế và kiểm chứng: [docs/context-recovery.md](docs/context-recovery.md). Context vượt giới hạn chỉ bởi yêu cầu/chỉ dẫn bắt buộc vẫn được báo lỗi, không âm thầm cắt yêu cầu.
+
 ## Pipeline Teamwork có bằng chứng — 0.10.0
 
 - Sơ đồ theo dõi mức chạy song song cao nhất, model thực tế, tool calls, kiểm tra đạt/trượt, tiêu chí, plan diagnostics và hai vòng sửa tối đa. Bấm thanh **Pipeline** để xem lưu ý, lịch sử repair, lệnh kiểm tra và trích đoạn bằng chứng.
