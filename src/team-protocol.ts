@@ -31,24 +31,32 @@ export function validateProtocol(tasks: Task[]) {
   }
 }
 
-/** Parallel reads are safe; shared implementation writes require disjoint declared file ownership. */
+const validationRoles = new Set(['tester', 'reviewer', 'judge']);
+const ownedFiles = (task: Task) => (task.expectedFiles || []).map(file => path.posix.normalize(file.replace(/\\/g, '/')).toLowerCase());
+/** Fill available slots across phases; running tasks retain reservations until they finish. */
 export function executionBatch(tasks: Task[], limit: number): Task[] {
   const ready = tasks.filter(task => task.status === 'ready').sort((a, b) => phases.indexOf(taskPhase(a)) - phases.indexOf(taskPhase(b)));
-  if (!ready.length) return [];
-  const phase = taskPhase(ready[0]), batch: Task[] = [], owned = new Set<string>();
-  for (const task of ready.filter(item => taskPhase(item) === phase)) {
-    if (batch.length >= limit) break;
-    // Gate tasks run serially so a repair cannot race another validator's stale verdict.
-    if (['tester', 'reviewer', 'judge', 'general'].includes(task.role)) return [task];
-    if (task.role === 'coder') {
-      const files = (task.expectedFiles || []).map(file => path.posix.normalize(file.replace(/\\/g, '/')).toLowerCase());
-      if (!files.length) return batch.length ? batch : [task];
-      if (files.some(file => owned.has(file))) continue;
-      files.forEach(file => owned.add(file));
-    }
+  const running = tasks.filter(task => task.status === 'running'), batch: Task[] = [];
+  for (const task of ready) {
+    if (running.length + batch.length >= limit) break;
+    const active = [...running, ...batch];
+    if (task.role === 'coder' && active.some(item => validationRoles.has(item.role))) continue;
+    if (validationRoles.has(task.role) && active.some(item => item.role === 'coder')) continue;
+    if (task.role === 'coder' && active.some(item => item.role === 'coder' && (!ownedFiles(task).length || !ownedFiles(item).length || ownedFiles(task).some(file => ownedFiles(item).includes(file))))) continue;
     batch.push(task);
   }
   return batch;
+}
+
+export function waitingReason(task: Task, tasks: Task[], limit: number): string | undefined {
+  if (!['pending', 'ready'].includes(task.status)) return;
+  const unmet = task.dependencies.filter(id => tasks.find(item => item.id === id)?.status !== 'completed');
+  if (unmet.length) return `Chờ kết quả: ${unmet.join(', ')}`;
+  const active = tasks.filter(item => item.status === 'running');
+  if (task.role === 'coder' && active.some(item => validationRoles.has(item.role))) return 'Chờ các kiểm tra kết thúc trước khi sửa nguồn';
+  if (validationRoles.has(task.role) && active.some(item => item.role === 'coder')) return 'Chờ nguồn ổn định để kiểm tra';
+  if (task.role === 'coder' && active.some(item => item.role === 'coder' && (!ownedFiles(task).length || !ownedFiles(item).length || ownedFiles(task).some(file => ownedFiles(item).includes(file))))) return 'Chờ quyền ghi tệp đang được agent khác sử dụng';
+  return active.length >= limit ? `Chờ slot · giới hạn ${limit} agent đồng thời` : 'Sẵn sàng nhận slot';
 }
 
 export function handoffContract(task: Task) {

@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { roleSchema, roleCatalog, assignedAgent } from './roles.js';
 import { SkillLibrary } from './skills.js';
 import { dependencyFingerprints, qualityGate, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
-import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol } from './team-protocol.js';
+import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
 import { scheduleRepair } from './team-repair.js';
 
 export function parseTeamPlan(raw: string): Task[] {
@@ -96,7 +96,7 @@ export class Teamwork {
       message: `Teamwork: ${id} started for goal: ${goal}`,
       timestamp: new Date().toISOString(),
     });
-    if (!isolated) emit({ type: 'agent_status', workspaceMode, message: 'Teamwork làm trong thư mục dự án. Worker chỉ chạy song song khi khai báo các tệp riêng; kiểm tra/gate chạy lần lượt.' });
+    if (!isolated) emit({ type: 'agent_status', workspaceMode, message: 'Teamwork làm trong thư mục dự án. Các tác vụ độc lập chạy đồng thời và lấp slot ngay khi agent kết thúc. Worker có quyền ghi tệp riêng; kiểm tra/review chạy song song khi nguồn ổn định.' });
 
     const library = new SkillLibrary(this.c.workspace);
     const baseTools = new Tools(this.c.workspace, this.approve, 'planner', library);
@@ -111,6 +111,9 @@ export class Teamwork {
     emit({
       type: 'planner_start',
       agentId: plannerId,
+      agentName: namedPlanner?.name || 'Planner',
+      configuredAgentId: namedPlanner?.id,
+      model: plannerModel,
       role: 'planner',
       status: 'running',
       message: 'Planner đang phân tích repository và lên kế hoạch...',
@@ -120,9 +123,10 @@ export class Teamwork {
     let planRaw: string;
     try {
       planRaw = await planner.run(
-        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. All implementation tasks share one session worktree. Parallel workers must declare disjoint exact expectedFiles. Return phase, acceptanceCriteria and verificationCommands for each task. Allowed phases: survey, specification, test_design, implementation, verification, review, challenge, audit, acceptance. For substantial project changes include specification, test writing, implementation, execution checks, all relevant independent reviewers, challenger, forensic auditor and a final fresh victory-auditor. Auditor must depend on reviews/challenges and implementations; acceptance must follow audit. Keep greetings and small tasks proportional. Every gate task reports JSON verdict PASS/FAIL/UNVERIFIED with findings and five handoff components. Explicit verificationCommands must actually execute through tools. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
+        `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. All implementation tasks share one session worktree. Parallel workers must declare disjoint exact expectedFiles. Build a fan-out/fan-in DAG: run independent exploration/specification and implementation branches concurrently; sibling tests, reviews and challenges should depend on the shared implementation, not on each other unless they truly consume their outputs. Do not invent sequential dependencies just to order phases. Test-writing and implementation should be sibling coder tasks after a shared specification contract, not a test-writer-then-all-workers chain unless workers actually consume generated test output. Substantial goals should have at least two useful independent implementation tasks with disjoint files when the architecture permits. The scheduler continuously fills free slots across phases as soon as actual dependencies finish. Validators run concurrently on a stable source; repairs wait for them to drain. Return phase, acceptanceCriteria and verificationCommands for each task. Allowed phases: survey, specification, test_design, implementation, verification, review, challenge, audit, acceptance. For substantial project changes include specification, test writing, implementation, execution checks, all relevant independent reviewers, challenger, forensic auditor and a final fresh victory-auditor. Auditor must depend on reviews/challenges and implementations; acceptance must follow audit. Keep greetings and small tasks proportional. Every gate task reports JSON verdict PASS/FAIL/UNVERIFIED with findings and five handoff components. Explicit verificationCommands must actually execute through tools. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Skill catalog (select exact IDs, do not invent): ${JSON.stringify(library.list().map(({ id, name, description }) => ({ id, name, description })))}`,
         this.abort.signal, undefined, [], {
           namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal,
+          onModel: model => emit({ type: 'agent_status', agentId: plannerId, agentName: namedPlanner?.name || 'Planner', role: 'planner', status: 'running', model }),
           checkpoint: memory => { this.db.saveConversation(`${id}:planner`, memory); writeAgentArtifact(sessionRoot, plannerId, 'BRIEFING.md', `# Planner briefing\n\nGoal: ${goal}\nModel: ${plannerModel}\nRole: planner (read-only)\nCheckpoint: ${id}:planner\nCompactions: ${memory.compactions}\n${memory.summary}\n`); },
           onItem: item => { this.db.archiveItem(`${id}:planner`, item); writeAgentArtifact(sessionRoot, plannerId, 'progress.md', `RUNNING\nLast update: ${new Date().toISOString()}\nStep: ${item.role}\n`); },
           onSkills: skills => emit({ type: 'agent_status', agentId: plannerId, role: 'planner', status: 'running', skills: skills.map(skill => skill.id), message: 'Planner đã nạp skill lập kế hoạch.' })
@@ -166,34 +170,14 @@ export class Teamwork {
     }
 
     this.tasks.forEach(t => this.db.task(id, t));
-    const snapshot = () => emit({ type: 'task_snapshot', sessionId: id, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task) })), timestamp: new Date().toISOString() });
+    const snapshot = () => emit({ type: 'task_snapshot', sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() });
     snapshot();
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
     fs.writeFileSync(path.join(sessionRoot, 'PROJECT.md'), `# Teamwork\n\nGoal: ${goal}\n\nWorkspace mode: ${workspaceMode}\n\nWorkflow: survey → specification → implementation/test writing → executed tests → independent review → adversarial checks/audit when warranted. Handoff summaries are claims; acceptance requires recorded tool evidence.\n`);
 
-    while (this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
-      updateReady(this.tasks);
-      this.tasks.filter(t => t.status === 'blocked').forEach(t => {
-        t.error ||= `Bị chặn bởi tác vụ: ${t.dependencies.filter(dep => ['failed', 'blocked', 'cancelled'].includes(this.tasks.find(task => task.id === dep)!.status)).join(', ')}`;
-        this.db.task(id, t);
-      });
-      const ready = executionBatch(this.tasks, this.c.maxAgents);
-      snapshot();
-      if (!ready.length) {
-        if (!this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
-          break;
-        }
-        const deadlockError = new Error('Scheduler deadlock: không có task ready');
-        this.tasks.filter(t => t.status === 'pending').forEach(t => {
-          t.status = 'blocked';
-          this.db.task(id, t);
-        });
-        throw deadlockError;
-      }
-
-      await Promise.all(
-        ready.map(async (t, index) => {
+    const pendingRepairs: { task: Task; reason: string }[] = [];
+    const executeTask = async (t: Task, index: number) => {
           t.status = 'running';
           t.startedAt = new Date().toISOString();
           const candidates = this.c.namedAgents?.filter(agent => agent.enabled && agent.role === t.role) || [];
@@ -201,6 +185,7 @@ export class Teamwork {
           const eligible = specialized.length ? specialized : candidates;
           const assigned = assignedAgent(this.c, t.agentId || eligible[index % Math.max(eligible.length, 1)]?.id, t.role);
           t.agentId = assigned?.id;
+          t.agentName = assigned?.name;
           const aid = `agent-${t.role}-${String(this.tasks.indexOf(t) + 1).padStart(2, '0')}${t.retries ? '-r' + t.retries : ''}`;
           t.assignedAgentId = aid;
           let scope = this.c.workspace;
@@ -230,6 +215,7 @@ export class Teamwork {
               requiresLongContext: false,
             });
             selectedModel = d.selectedModel;
+            t.model = selectedModel;
 
             this.agents.set(aid, { role: t.role, status: 'running', model: selectedModel });
             this.db.agent(id, {
@@ -300,6 +286,7 @@ export class Teamwork {
               skills: t.skills,
               namedAgentId: assigned?.id,
               agentConfig: this.c,
+              onModel: model => { t.model = model; this.db.task(id, t); emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', model }); },
               skillWorkspace: this.c.workspace,
               onSkills: skills => {
                 t.loadedSkills = skills.map(skill => skill.id);
@@ -348,13 +335,7 @@ export class Teamwork {
             const failedProof = evidence.get(t.id);
             attemptReport = structuredHandoff(t, failedProof);
             writeAgentArtifact(sessionRoot, aid, 'handoff.json', JSON.stringify(attemptReport, null, 2));
-            const repair = !isAborted && ((failedProof?.failedChecks || 0) > 0 || reviewVerdict(t) === 'FAIL')
-              ? scheduleRepair(this.tasks, t, String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []), repairRounds + 1) : undefined;
-            if (repair) {
-              repairRounds++;
-              for (const task of this.tasks) { if (task.status === 'pending') evidence.delete(task.id); this.db.task(id, task); }
-              emit({ type: 'agent_status', taskId: t.id, status: 'pending', message: `Gate yêu cầu sửa: ${repair.id}. Tạo agent/context mới và chạy lại các kiểm tra phụ thuộc.` });
-            }
+            if (!isAborted && ((failedProof?.failedChecks || 0) > 0 || reviewVerdict(t) === 'FAIL')) pendingRepairs.push({ task: t, reason: String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []) });
 
             this.agents.set(aid, {
               role: t.role,
@@ -387,9 +368,45 @@ export class Teamwork {
             writeAgentArtifact(sessionRoot, aid, 'progress.md', `${String(report.status).toUpperCase()}\n\n${t.error || ''}\n`);
             writeAgentArtifact(sessionRoot, aid, 'handoff.md', `# Handoff ${t.id}\n\nStatus: ${report.status}\nWorkspace: ${scope}\nSkills: ${(t.loadedSkills || []).join(', ')}\nTool evidence: ${JSON.stringify(report.toolEvidence || {})}\n\n## 1. Observation\n${report.observation}\n\n## 2. Logic Chain\n${report.logicChain}\n\n## 3. Caveats\n${JSON.stringify(report.caveats)}\n\n## 4. Conclusion\n${report.conclusion}\n\n## 5. Verification Method\n${JSON.stringify(report.verificationMethod, null, 2)}\n\nInvalidation conditions: ${JSON.stringify(report.invalidationConditions)}\n`);
           }
-        })
-      );
+    };
+
+    const pool = new Map<string, Promise<void>>();
+    let dispatchIndex = 0, fatalError: unknown;
+    while (pool.size || pendingRepairs.length || this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
+      // Drain concurrent validators before a repair invalidates their source and evidence.
+      if (!pool.size && pendingRepairs.length) {
+        for (const failure of pendingRepairs.splice(0)) {
+          if (failure.task.status !== 'failed' || this.abort.signal.aborted) continue;
+          const repair = scheduleRepair(this.tasks, failure.task, failure.reason, repairRounds + 1);
+          if (!repair) continue;
+          repairRounds++;
+          for (const task of this.tasks) { if (task.status === 'pending') evidence.delete(task.id); this.db.task(id, task); }
+          emit({ type: 'agent_status', taskId: failure.task.id, status: 'pending', message: `Gate yêu cầu sửa: ${repair.id}. Agent/context mới; chạy lại kiểm tra phụ thuộc sau khi các agent hiện tại kết thúc.` });
+        }
+      }
+      if (fatalError) { if (pool.size) { await Promise.all(pool.values()); continue; } throw fatalError; }
+      if (this.abort.signal.aborted) {
+        for (const task of this.tasks) if (['pending', 'ready'].includes(task.status)) { task.status = 'cancelled'; this.db.task(id, task); }
+      } else if (!pendingRepairs.length) {
+        updateReady(this.tasks);
+        this.tasks.filter(t => t.status === 'blocked').forEach(t => {
+          t.error ||= `Bị chặn bởi tác vụ: ${t.dependencies.filter(dep => ['failed', 'blocked', 'cancelled'].includes(this.tasks.find(task => task.id === dep)!.status)).join(', ')}`;
+          this.db.task(id, t);
+        });
+        for (const task of executionBatch(this.tasks, this.c.maxAgents)) {
+          const promise = executeTask(task, dispatchIndex++).catch(error => { fatalError = error; this.abort.abort(); }).then(() => { pool.delete(task.id); });
+          pool.set(task.id, promise);
+        }
+      }
+      snapshot();
+      if (pool.size) { await Promise.race(pool.values()); continue; }
+      if (pendingRepairs.length) continue;
+      if (this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
+        this.tasks.filter(t => ['pending', 'ready'].includes(t.status)).forEach(t => { t.status = 'blocked'; this.db.task(id, t); });
+        snapshot(); throw new Error('Scheduler deadlock: không có task có thể chạy');
+      }
     }
+    if (fatalError) throw fatalError;
 
     const failed = this.tasks.filter(t => t.status !== 'completed');
     const status = failed.length ? 'failed' : 'completed';

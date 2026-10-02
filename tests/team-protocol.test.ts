@@ -25,6 +25,20 @@ describe('Anti-style phase and ownership protocol', () => {
   it('rejects incompatible phases and ambiguous or escaping file ownership', () => {
     for (const task of [{ role: 'coder', phase: 'audit' }, { role: 'coder', expectedFiles: ['../x'] }, { role: 'coder', expectedFiles: ['src/**'] }, { role: 'coder', expectedFiles: ['C:\\x'] }]) expect(() => parseTeamPlan(JSON.stringify({ tasks: [{ id: 'a', title: 'A', ...task }] }))).toThrow();
   });
+  it('fills slots across phases and allows sibling validators in parallel on stable source', () => {
+    const tasks = parseTeamPlan(JSON.stringify({ tasks: [
+      { id:'survey',role:'planner',title:'Survey' }, { id:'spec',role:'planner',phase:'specification',title:'Spec' },
+      { id:'a',role:'coder',title:'A',expectedFiles:['a.ts'] }, { id:'b',role:'coder',title:'B',expectedFiles:['b.ts'] },
+      { id:'test',role:'tester',title:'Test' }, { id:'review',role:'reviewer',title:'Review' }
+    ] }));
+    expect(executionBatch(tasks,4).map(task => task.id)).toEqual(['survey','spec','a','b']);
+    tasks[2].status='running'; tasks[0].status=tasks[1].status=tasks[3].status='completed';
+    expect(executionBatch(tasks,4)).toEqual([]); // Do not validate a source being written.
+    tasks[2].status='completed';
+    expect(executionBatch(tasks,4).map(task => task.id)).toEqual(['test','review']);
+    tasks[4].status='running'; tasks[2].status='ready';
+    expect(executionBatch(tasks,4).map(task => task.id)).toEqual(['review']);
+  });
   it('invalidates old checks and creates a bounded repair without weakening criteria', () => {
     const tasks = plan(); tasks.forEach(task => task.status = 'completed');
     tasks[2].status = 'failed'; tasks[2].resultSummary = '{"verdict":"FAIL","findings":["bug"]}';

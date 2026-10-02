@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +30,43 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('reports a failed durable checkpoint even after the last task completed',async()=>{
+    const dir=root(); const {team}=runner(dir,[{id:'task',role:'general',title:'Answer'}],async()=>({content:'answer',toolCalls:[]}));
+    const original=fs.writeFileSync;
+    const write=vi.spyOn(fs,'writeFileSync').mockImplementation(((file:any,data:any,...args:any[])=>{
+      if(String(file).includes('agent-general-01')&&String(file).endsWith('progress.md')&&String(data).startsWith('COMPLETED'))throw new Error('checkpoint unavailable');
+      return (original as any)(file,data,...args);
+    }) as any);
+    try{await expect(team.run('Question')).rejects.toThrow('checkpoint unavailable');}finally{write.mockRestore();}
+  });
+  it('starts a dependent task while another independent worker is still running', async () => {
+    const dir=root(); let releaseSlow!:()=>void, observedOverlap=false;
+    const slow = new Promise<void>(resolve => releaseSlow=resolve);
+    const timeout=setTimeout(releaseSlow,2500);
+    const {team}=runner(dir,[
+      {id:'fast',role:'coder',title:'Fast',description:'fast',expectedFiles:['fast.txt']},
+      {id:'slow',role:'coder',title:'Slow',description:'slow',expectedFiles:['slow.txt']},
+      {id:'next',role:'planner',title:'Next',description:'next',dependencies:['fast']}
+    ],async messages=>{
+      const request=messages.findLast(message=>message.role==='user')?.content;
+      if(request==='slow') await slow;
+      if(request==='next') { observedOverlap=team.tasks.find(task=>task.id==='slow')?.status==='running'; releaseSlow(); }
+      return {content:'done',toolCalls:[]};
+    });
+    try { const result=await team.run('Parallel branches'); expect(result.status).toBe('completed'); expect(observedOverlap).toBe(true); }
+    finally {clearTimeout(timeout);releaseSlow();}
+  });
+  it('runs sibling verification and review concurrently rather than one role at a time', async () => {
+    const dir=root(); let release!:()=>void; const barrier=new Promise<void>(resolve=>release=resolve), starts=new Set<string>();
+    const timeout=setTimeout(release,2500); let overlapping=false;
+    const {team}=runner(dir,[{id:'code',role:'coder',title:'Code',description:'code',expectedFiles:['a.txt']},...['test','review'].map(id=>({id,role:id==='test'?'tester':'reviewer',title:id,description:id,dependencies:['code']}))],async messages=>{
+      const request=messages.findLast(message=>message.role==='user')?.content || '';
+      if(request!=='code') {starts.add(request); if(starts.size===2) {overlapping=true;release();} await barrier;}
+      return {content:'done',toolCalls:[]};
+    });
+    try { await team.run('Parallel gates'); expect(overlapping).toBe(true); }
+    finally {clearTimeout(timeout);release();}
+  });
   it('creates a page and lets tester/reviewer inspect the same files in an ordinary folder', async () => {
     const dir = root(); let wrote = false; const checked: string[] = [];
     const plan = [{ id: 'T1', role: 'coder', title: 'Create page', description: 'create-page', dependencies: [] }, { id: 'T2', role: 'tester', title: 'Check page', description: 'check-page', dependencies: ['T1'] }, { id: 'T3', role: 'reviewer', title: 'Review page', description: 'review-page', dependencies: ['T2'] }];
@@ -143,5 +180,30 @@ describe('Teamwork workspace mode', () => {
     expect(result.gate.verdict).toBe('FAIL');
     expect(result.tasks.find(task => task.id === 'test')?.error).toContain('Integrity veto');
     expect(result.tasks.some(task => task.id.startsWith('repair-'))).toBe(false);
+  });
+  it('drains concurrent validators before repair and invalidates the completed sibling review',async()=>{
+    const dir=root(); let release!:()=>void, slowCompleted=false, repairedAfterDrain=false;
+    const barrier=new Promise<void>(resolve=>release=resolve), timeout=setTimeout(release,2500);
+    const command=`node -e "process.exit(require('fs').readFileSync('a.txt','utf8')==='good'?0:1)"`;
+    const {team}=runner(dir,[{id:'code',role:'coder',title:'Code',description:'code',expectedFiles:['a.txt']},{id:'test',role:'tester',title:'Test',description:'test',dependencies:['code']},{id:'review',role:'reviewer',title:'Review',description:'review',dependencies:['code']}],async messages=>{
+      const request=messages.findLast(message=>message.role==='user')?.content || '',tools=messages.filter(message=>message.role==='tool');
+      if(!tools.length){
+        const repair=request.startsWith('[REPAIR]');if(repair) repairedAfterDrain=slowCompleted;
+        const name=request==='code'||repair?'write_file':request==='test'?'run_command':'read_file';
+        const args=name==='write_file'?{path:'a.txt',content:repair?'good':'bad'}:name==='run_command'?{command}:{path:'a.txt'};
+        return {content:'',toolCalls:[{id:'call',type:'function',function:{name,arguments:JSON.stringify(args)}}]};
+      }
+      if(request==='review') await barrier;
+      return {content:request==='review'?'{"verdict":"PASS","findings":[]}':'done',toolCalls:[]};
+    });
+    try{
+      const result=await team.run('Repair concurrent verification',event=>{
+        if(typeof event==='string')return;
+        if(event.type==='task_failed'&&event.taskId==='test')release();
+        if(event.type==='task_complete'&&event.taskId==='review')slowCompleted=true;
+      });
+      expect(repairedAfterDrain).toBe(true);expect(result.gate.verdict).toBe('PASS');
+      expect(result.tasks.find(task=>task.id==='review')?.retries).toBe(1);
+    }finally{clearTimeout(timeout);release();}
   });
 });

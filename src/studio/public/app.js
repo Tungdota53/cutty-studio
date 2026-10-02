@@ -24,6 +24,7 @@ function setBusy(value) {
 }
 function configure(next) {
   config = next;
+  if (teamData) TeamMap.configure(teamData, next.model);
   const parts = next.workspace.split(/[\\/]/).filter(Boolean);
   $('workspace-name').textContent = parts.at(-1) || next.workspace;
   $('workspace-path').textContent = next.workspace; $('workspace-button').title = next.workspace;
@@ -248,8 +249,8 @@ function showSkills(skills) {
   if (!skills.length) $('skill-results').textContent = 'Không tìm thấy skill phù hợp.';
 }
 function showTeam(data) {
-  TeamMap.configure(data.namedAgents);
-  teamData = data; $('team-max').value = data.maxAgents;
+  TeamMap.configure(data, config?.model);
+  teamData = data; $('team-max').value = data.maxAgents; $('agent-iterations').value = data.maxAgentIterations || 64; $('agent-tools').value = data.maxAgentToolCalls || 192;
   showNamedAgents(data);
   const previousRole = $('role-picker').value || 'coder';
   $('role-picker').replaceChildren();
@@ -305,7 +306,7 @@ $('team-form').onsubmit = event => {
     instructions: card.querySelector('[data-field=instructions]').value,
     skills: [...card.querySelectorAll('[data-skill]:checked')].map(input => input.dataset.skill)
   }));
-  send({ type: 'configure_team', profiles, namedAgents, maxAgents: Number($('team-max').value) });
+  send({ type: 'configure_team', profiles, namedAgents, maxAgents: Number($('team-max').value), maxAgentIterations: Number($('agent-iterations').value), maxAgentToolCalls: Number($('agent-tools').value) });
 };
 function namedAgentCard(agent, data) {
   const card = document.createElement('details'); card.className = 'named-agent-card'; card.dataset.agent = agent.id;

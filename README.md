@@ -2,6 +2,19 @@
 
 Ứng dụng desktop Windows cho coding với API tương thích OpenAI, chat streaming, ngữ cảnh bền vững và teamwork nhiều agent. Mã nguồn: [Tungdota53/cutty-studio](https://github.com/Tungdota53/cutty-studio).
 
+## Agent chạy đồng thời — 0.8.0
+
+Scheduler dùng pool liên tục: task độc lập ở các pha khác nhau nhận slot ngay khi có chỗ trống, không đợi hết một batch. Worker có tệp riêng chạy song song; các tester/reviewer độc lập cũng chạy cùng lúc trên nguồn ổn định. Planner được hướng dẫn tạo các nhánh fan-out/fan-in, với test writer và worker cùng triển khai sau hợp đồng chung.
+
+- **Agent trực tiếp** là chế độ sơ đồ mặc định: thẻ lớn, tên agent, AI/model đang gọi, nhiệm vụ, bước hiện tại và lý do chờ. Thanh **AI ĐANG CHẠY** hiện tất cả model đang hoạt động; số slot hiển thị `đang chạy / giới hạn`.
+- **Luồng phụ thuộc** giữ DAG để xem nhánh song song và điểm hội tụ. Model thực tế, kể cả fallback, được cập nhật theo từng lần gọi và lưu trong task.
+- Chỉ chờ khi có dependency thật, trùng quyền ghi tệp, cần nguồn ổn định để kiểm tra hoặc hết slot. Sửa lỗi chờ các validator đang chạy kết thúc, rồi vô hiệu hóa bằng chứng và chạy lại kiểm tra liên quan.
+- **Thiết lập agent** cho phép chọn 1–16 slot, 8–200 lượt suy luận và 16–2.000 lượt công cụ/task. Mặc định tăng từ 20/50 lên 64/192. Bốn vòng đọc cùng kết quả kích hoạt nhắc tiến triển; tám vòng liên tiếp dừng với nguyên nhân cụ thể và giữ context. Đây không phải tự chứng minh hoặc tự hoàn tất một agent bị kẹt.
+
+Kiểm tra desktop xác nhận hai model có request cùng lúc; kiểm tra scheduler xác nhận task tiếp theo bắt đầu khi worker khác vẫn chạy, sibling test/review chạy đồng thời và repair không đua với validator.
+
+![Nhiều AI chạy cùng lúc](docs/agent-map-preview.png)
+
 ## Giao diện và sơ đồ agent — 0.7.0
 
 Giao diện mới dùng nền tối xanh, điểm nhấn mint, chuyển động cho card/panel/dialog, trạng thái chạy và đường nối tác vụ. Tự tắt animation và cuộn mượt khi hệ điều hành bật giảm chuyển động.
@@ -82,8 +95,8 @@ Thiết kế tham khảo cách [Codex quản lý lịch sử và compaction](htt
 
 Giao diện desktop mới tập trung vào chat: chọn thư mục dự án, lịch sử trò chuyện, chế độ trợ lý hoặc Teamwork, cài đặt API/model, bảng Git diff và nhật ký chỉ mở khi cần. Chat được lưu trong SQLite của từng dự án và gửi lại các lượt gần đây khi tiếp tục cuộc trò chuyện. Nút dừng hủy yêu cầu đang chạy; lệnh nguy hiểm vẫn cần phê duyệt.
 
-- `release/Vibe-Studio-0.7.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
-- `release/Vibe-Studio-0.7.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
+- `release/Vibe-Studio-0.8.0-x64-Portable.exe`: chạy trực tiếp, không cần cài đặt.
+- `release/Vibe-Studio-0.8.0-x64-Setup.exe`: cài đặt và tạo shortcut trên Windows x64.
 
 Bản 0.1.1 sửa lỗi khởi động `ERR_MODULE_NOT_FOUND: better-sqlite3` của bản 0.1.0: SQLite và hai thư viện hỗ trợ được sao chép trực tiếp sau bước đóng gói, kiểm tra từng tệp bằng SHA-256. Kiểm tra runtime nay bắt buộc các thư viện phải tồn tại ngay trong gói, tránh vô tình sử dụng thư viện từ thư mục mã nguồn.
 

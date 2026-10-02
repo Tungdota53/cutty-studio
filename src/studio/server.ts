@@ -105,7 +105,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let teamworkState: any = null;
   let busy = false;
   const skills = new SkillLibrary(c.workspace);
-  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents });
+  const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents, maxAgentIterations: c.maxAgentIterations || 64, maxAgentToolCalls: c.maxAgentToolCalls || 192 });
   const token = typeof options === 'object' ? options.token : undefined;
 
   const clients = new Set<WebSocket>();
@@ -330,13 +330,13 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         } else if (msg.type === 'configure_team') {
           if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi phân vai.');
           const data = teamSchema.parse(msg);
-          const next = { ...c, maxAgents: data.maxAgents ?? c.maxAgents, namedAgents: data.namedAgents ?? c.namedAgents, agentProfiles: { ...c.agentProfiles, ...data.profiles } };
+          const next = { ...c, maxAgents: data.maxAgents ?? c.maxAgents, maxAgentIterations: data.maxAgentIterations ?? c.maxAgentIterations, maxAgentToolCalls: data.maxAgentToolCalls ?? c.maxAgentToolCalls, namedAgents: data.namedAgents ?? c.namedAgents, agentProfiles: { ...c.agentProfiles, ...data.profiles } };
             const available = skills.list();
             for (const role of roles) skills.select(role, '', next, [], available);
             for (const agent of next.namedAgents || []) skills.select(agent.role, '', next, agent.skills, available);
           const file = path.join(c.workspace, '.vibe', 'config.json');
           const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
-          fs.writeFileSync(file, JSON.stringify({ ...saved, agentProfiles: next.agentProfiles, namedAgents: next.namedAgents, maxAgents: next.maxAgents }, null, 2));
+          fs.writeFileSync(file, JSON.stringify({ ...saved, agentProfiles: next.agentProfiles, namedAgents: next.namedAgents, maxAgents: next.maxAgents, maxAgentIterations: next.maxAgentIterations, maxAgentToolCalls: next.maxAgentToolCalls }, null, 2));
           c = next; client = new ModelClient(c); router = new ModelRouter(c);
           broadcast({ type: 'team_config', saved: true, ...teamConfig() });
         } else if (msg.type === 'get_models') {
@@ -439,6 +439,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                   broadcast({ type: 'terminal_log', text: ev });
                 } else {
                   if (ev.type === 'session_start') teamworkState = { sessionId: ev.sessionId, goal: ev.goal, tasks: [], status: 'running' };
+                  if (ev.agentId && !ev.taskId && ev.role === 'planner') teamworkState = { ...teamworkState, planner: { ...teamworkState?.planner, ...ev } };
                   if (ev.type === 'task_snapshot' || ev.type === 'session_end') teamworkState = { ...teamworkState, ...ev };
                   broadcast({ type: 'teamwork_event', event: ev });
                 }

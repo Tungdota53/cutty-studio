@@ -9,14 +9,23 @@ window.TeamMap = (() => {
   const stepLabels = { user:'Nhận nhiệm vụ',assistant:'Tổng hợp kết quả',read_file:'Đọc tệp',write_file:'Ghi tệp',edit_file:'Sửa tệp',search_files:'Tìm trong dự án',run_command:'Chạy lệnh',run_tests:'Chạy kiểm thử',git_diff:'Đọc thay đổi',load_skill:'Nạp skill',read_skill_resource:'Đọc tài nguyên skill' };
   const stepText = value => value?.startsWith('Finished ') ? 'Xong · ' + (stepLabels[value.slice(9)] || value.slice(9)) : stepLabels[value] || value;
   const fallbackPhase = { planner:'survey',coder:'implementation',tester:'verification',reviewer:'review',judge:'acceptance',general:'survey' };
-  let tasks = [], roster = [], live = new Map(), selected = null, zoom = 1, width = 800, height = 400;
-  let session = null, running = false, connected = true, follow = true, goal = '', gate = null, rendering = 0;
+  let tasks = [], roster = [], live = new Map(), selected = null, zoom = 1, width = 800, height = 400, diagram = 'agents', maxAgents = 4, roleModels = {}, defaultModel = '';
+  let session = null, running = false, connected = true, follow = true, goal = '', gate = null, rendering = 0, planner = null;
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const svgNode = (tag, attributes) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [key,value] of Object.entries(attributes)) el.setAttribute(key, String(value)); return el; };
   const phaseOf = task => task.phase || fallbackPhase[task.role] || 'survey';
   const activeTask = task => ({ ...task, ...(live.get(task.id) || {}) });
   const agentFor = task => roster.find(agent => agent.id === (task.configuredAgentId || task.agentId));
   const titleFor = task => task.agentName || agentFor(task)?.name || task.role || 'Agent';
+  const modelFor = task => task.model || agentFor(task)?.model || roleModels[task.role] || defaultModel || 'Theo cấu hình';
+  const displayTasks = () => tasks.length ? tasks.map(activeTask) : planner ? [{ ...planner, id:'planning', title:'Phân tích yêu cầu & phân công', phase:'survey', dependencies:[], status:planner.status === 'idle' ? 'completed' : planner.status, assignedAgentId:planner.agentId }] : [];
+  function viewDiagram(value) {
+    diagram = value;
+    get('map-agent-grid').hidden = value !== 'agents';
+    get('map-mode-agents').classList.toggle('active', value === 'agents'); get('map-mode-dag').classList.toggle('active', value === 'dag');
+    get('map-mode-agents').setAttribute('aria-pressed',String(value === 'agents')); get('map-mode-dag').setAttribute('aria-pressed',String(value === 'dag'));
+    get('map-zoom-in').disabled = get('map-zoom-out').disabled = value !== 'dag'; schedule();
+  }
   function view(name) {
     const map = name === 'team'; document.body.dataset.view = name;
     get('team-map-view').hidden = !map;
@@ -32,10 +41,10 @@ window.TeamMap = (() => {
   function fit() { zoom = Math.max(.35, Math.min(1.2, (get('map-viewport').clientWidth - 56) / width)); scale(); get('map-viewport').scrollTo({ left:0, top:0, behavior:scrollBehavior() }); }
   function schedule() { if (!rendering) rendering = requestAnimationFrame(() => { rendering = 0; render(); }); }
   function render() {
-    const all = tasks.map(activeTask), counts = {};
+    const all = displayTasks(), counts = {};
     for (const task of all) counts[task.status] = (counts[task.status] || 0) + 1;
     get('map-total').textContent = all.length;
-    get('map-running').textContent = counts.running || 0;
+    get('map-running').textContent = `${counts.running || 0}/${maxAgents}`;
     get('map-completed').textContent = counts.completed || 0;
     get('map-failed').textContent = (counts.failed || 0) + (counts.blocked || 0) + (counts.interrupted || 0);
     get('map-gate').textContent = gate?.verdict || (running ? 'Đang đánh giá' : session ? 'Chưa xác minh' : 'Chưa chạy');
@@ -45,13 +54,14 @@ window.TeamMap = (() => {
     get('map-session-label').textContent = !connected && running ? 'Mất kết nối · đang thử lại' : running ? 'Team đang hoạt động' : session ? 'Phiên Teamwork' : 'Team của bạn';
     get('map-goal').textContent = goal || 'Theo dõi cách team biến yêu cầu thành kết quả.';
     get('map-summary').textContent = gate ? `${gate.verdict} · ${(gate.reasons || []).join(' · ') || 'Đã tổng hợp gate nghiệm thu.'}` : session ? `${session} · ${counts.completed || 0}/${all.length} tác vụ hoàn tất` : 'Sơ đồ hiển thị dữ liệu thật từ phiên Teamwork.';
+    renderFleet(all);
     get('map-phases').replaceChildren();
     phases.forEach((phase,index) => {
       const group = all.filter(task => phaseOf(task) === phase), active = group.some(task => task.status === 'running');
       const chip = node('span', 'phase-chip' + (active ? ' active' : group.length && group.every(task => task.status === 'completed') ? ' done' : ''));
       chip.append(node('b','',String(index + 1).padStart(2,'0')), document.createTextNode(phaseLabels[index])); get('map-phases').append(chip);
     });
-    get('map-empty').hidden = all.length > 0; get('map-canvas-shell').hidden = !all.length;
+    get('map-empty').hidden = all.length > 0; get('map-canvas-shell').hidden = !all.length || diagram !== 'dag'; get('map-agent-grid').hidden = !all.length || diagram !== 'agents';
     if (!all.length) { renderRoster(); if (running) get('map-session-label').textContent = 'Planner đang lên kế hoạch…'; renderDetails(); return; }
     // Topological layers keep dependency edges meaningful even when a phase repeats for repair.
     const byId = new Map(all.map(task => [task.id,task])), levels = new Map();
@@ -75,6 +85,7 @@ window.TeamMap = (() => {
       card.replaceChildren();
       const top = node('div','node-top'); top.append(node('span','node-avatar',roleIcons[task.role] || '◌'), node('strong','node-name',titleFor(task)), node('span','node-status',statusLabels[task.status] || task.status));
       card.append(top,node('p','node-title',task.title || task.id));
+      card.append(node('p','node-model',`AI · ${modelFor(task)}`));
       const bottom = node('div','node-bottom'); bottom.append(node('span','',task.id),node('span','',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)),node('span','node-step',stepText(task.step) || (task.status === 'running' ? 'Đang thực hiện…' : task.retries ? `Lần thử ${task.retries + 1}` : ''))); card.append(bottom);
       card.setAttribute('aria-label', `${titleFor(task)}: ${task.title || task.id}, ${statusLabels[task.status] || task.status}`);
     }
@@ -90,9 +101,31 @@ window.TeamMap = (() => {
       if (task.status === 'running') edges.append(svgNode('path',{d,class:'map-edge-flow'}));
     }
     scale(); renderDetails();
-    if (follow && document.body.dataset.view === 'team') {
+    if (follow && diagram === 'dag' && document.body.dataset.view === 'team') {
       const current = all.find(task => task.status === 'running');
       if (current && get('map-viewport').dataset.following !== current.id) { get('map-viewport').dataset.following = current.id; const pos = positions.get(current.id); get('map-viewport').scrollTo({left:Math.max(0,pos.x*zoom - 60),top:Math.max(0,pos.y*zoom - 60),behavior:scrollBehavior()}); }
+    }
+  }
+  function renderFleet(all) {
+    const target = get('map-agent-grid'), active = all.filter(task => task.status === 'running');
+    get('map-active-ais').replaceChildren();
+    if (!active.length) get('map-active-ais').append(node('span','active-ai-empty',running ? 'Đang điều phối / chờ điều kiện chạy' : 'Không có AI đang chạy'));
+    for (const task of active) { const tag = node('button','active-ai-pill'); tag.type = 'button'; tag.append(node('i',''),node('strong','',titleFor(task)),node('span','',modelFor(task)),node('small','',task.id)); tag.onclick = () => { selected = task.id; schedule(); }; get('map-active-ais').append(tag); }
+    const order = {running:0,ready:1,pending:2,failed:3,blocked:3,completed:4,cancelled:5};
+    const sorted = [...all].sort((a,b) => (order[a.status] ?? 5) - (order[b.status] ?? 5));
+    const existing = new Map([...target.children].map(el => [el.dataset.task,el]));
+    for (const old of existing.values()) if (!all.some(task => task.id === old.dataset.task)) old.remove();
+    for (const task of sorted) {
+      let card = existing.get(task.id);
+      if (!card) { card = node('button','fleet-card'); card.type = 'button'; card.dataset.task = task.id; card.onclick = () => { selected = task.id; schedule(); }; }
+      card.className = `fleet-card ${task.status}${selected === task.id ? ' selected' : ''}`; card.setAttribute('aria-pressed',String(selected === task.id)); card.replaceChildren();
+      const top = node('div','fleet-card-top'); top.append(node('span','fleet-avatar',roleIcons[task.role] || '◌'),node('strong','',titleFor(task)),node('span','fleet-status',statusLabels[task.status] || task.status));
+      card.append(top,node('p','fleet-model',`AI · ${modelFor(task)}`),node('h3','fleet-title',task.title || task.id));
+      const state = task.status === 'running' ? stepText(task.step) || 'Đang thực hiện nhiệm vụ' : task.waitReason || (task.status === 'completed' ? 'Đã bàn giao kết quả' : task.error || 'Chưa phân công');
+      card.append(node('p','fleet-step',state));
+      const foot = node('div','fleet-foot'); foot.append(node('span','',task.id),node('span','',`${(task.skills || task.loadedSkills || []).length} skill`),node('span','',task.assignedAgentId || 'Chờ tạo agent')); card.append(foot);
+      if (task.status === 'running') card.append(node('div','fleet-running-bar'));
+      target.append(card);
     }
   }
   function renderRoster() {
@@ -100,11 +133,11 @@ window.TeamMap = (() => {
     for (const agent of roster.filter(agent => agent.enabled)) { const item = node('span','roster-item'); item.append(node('b','',roleIcons[agent.role] || '◌'),document.createTextNode(agent.name)); target.append(item); }
   }
   function renderDetails() {
-    const task = tasks.find(task => task.id === selected); if (!task) return;
+    const task = displayTasks().find(task => task.id === selected); if (!task) return;
     const state = activeTask(task), agent = agentFor(state), target = get('map-detail-content'); target.replaceChildren();
     target.append(node('p','eyebrow','AGENT / ' + task.id),node('h2','detail-agent-name',titleFor(state)),node('span','detail-status ' + state.status,statusLabels[state.status] || state.status),node('h3','detail-task-title',task.title || task.id));
     const facts = node('dl','detail-facts');
-    for (const [key,value] of [['Vai trò',task.role],['Model',state.model || agent?.model || 'Theo cấu hình vai'],['Pha',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)],['Lần thử',String((task.retries || 0) + 1)],['Bước hiện tại',stepText(state.step) || state.message || 'Chưa có cập nhật']]) { facts.append(node('dt','',key),node('dd','',value)); }
+    for (const [key,value] of [['Vai trò',task.role],['AI / Model',modelFor(state)],['Agent ID',task.assignedAgentId || 'Chưa tạo'],['Pha',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)],['Lần thử',String((task.retries || 0) + 1)],['Trạng thái',state.waitReason || stepText(state.step) || state.message || 'Chưa có cập nhật']]) { facts.append(node('dt','',key),node('dd','',value)); }
     target.append(facts);
     for (const [label,values] of [['Skill',state.skills || task.loadedSkills || []],['Phụ thuộc',task.dependencies || []],['Tệp được giao',task.expectedFiles || []]]) { target.append(node('h4','',label)); const chips = node('div','detail-chips'); for (const value of values) chips.append(node('span','',value)); if (!values.length) chips.append(node('small','muted','Chưa có')); target.append(chips); }
     if (task.error || task.resultSummary) { const details = node('details','detail-result'); details.append(node('summary','',task.error ? 'Chi tiết lỗi' : 'Kết quả tác vụ'),node('pre','',task.error || task.resultSummary)); target.append(details); }
@@ -116,10 +149,11 @@ window.TeamMap = (() => {
     row.append(node('time','',stamp.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})),node('p','',event.message || `${event.taskId || 'Agent'} · ${stepText(event.step)}`)); target.prepend(row);
     while (target.children.length > 80) target.lastChild.remove();
   }
-  function reset() { tasks = []; live.clear(); selected = null; gate = null; session = null; running = false; goal = ''; get('map-nodes').replaceChildren(); get('map-feed').replaceChildren(node('p','muted','Sự kiện mới sẽ xuất hiện ở đây.')); get('map-detail-content').replaceChildren(node('p','detail-placeholder','Chọn tác vụ để xem chi tiết agent.')); get('map-viewport').dataset.following = ''; schedule(); }
+  function reset() { tasks = []; live.clear(); planner = null; selected = null; gate = null; session = null; running = false; goal = ''; get('map-nodes').replaceChildren(); get('map-feed').replaceChildren(node('p','muted','Sự kiện mới sẽ xuất hiện ở đây.')); get('map-detail-content').replaceChildren(node('p','detail-placeholder','Chọn tác vụ để xem chi tiết agent.')); get('map-viewport').dataset.following = ''; schedule(); }
   function event(event) {
     if (event.type === 'session_start') { reset(); session = event.sessionId; goal = event.goal || ''; running = true; view('team'); }
-    if (event.type === 'task_snapshot') { tasks = event.tasks || []; for (const task of tasks) { const prior = live.get(task.id); if (!prior) continue; if (task.assignedAgentId !== prior.agentId) live.delete(task.id); else if (task.status !== prior.status) live.set(task.id,{ agentId:prior.agentId, configuredAgentId:prior.configuredAgentId, agentName:prior.agentName, model:prior.model, skills:prior.skills, status:task.status }); } }
+    if (event.agentId && !event.taskId && event.role === 'planner') planner = {...planner,...event};
+    if (event.type === 'task_snapshot') { tasks = event.tasks || []; maxAgents = event.maxAgents || maxAgents; for (const task of tasks) { const prior = live.get(task.id); if (!prior) continue; if (task.assignedAgentId !== prior.agentId) live.delete(task.id); else if (task.status !== prior.status) live.set(task.id,{ agentId:prior.agentId, configuredAgentId:prior.configuredAgentId, agentName:prior.agentName, model:prior.model, skills:prior.skills, status:task.status }); } }
     if (event.taskId && event.type !== 'task_snapshot') {
       const task = tasks.find(task => task.id === event.taskId);
       // A failed old attempt must not overwrite a task already reset for repair.
@@ -131,8 +165,8 @@ window.TeamMap = (() => {
   }
   function restore(state, history = false) {
     if (!state) return;
-    reset(); session = state.sessionId; goal = state.goal || ''; running = !history && state.status === 'running'; gate = state.gate || null;
-    tasks = (state.tasks || []).map(task => history && ['running','ready'].includes(task.status) ? {...task,status:'interrupted'} : task); schedule();
+    reset(); session = state.sessionId; goal = state.goal || ''; running = !history && state.status === 'running'; gate = state.gate || null; planner = state.planner || null;
+    maxAgents = state.maxAgents || maxAgents; tasks = (state.tasks || []).map(task => history && ['running','ready'].includes(task.status) ? {...task,status:'interrupted'} : task); schedule();
   }
   get('view-team').onclick = get('open-map').onclick = () => view('team');
   get('view-chat').onclick = get('map-back').onclick = () => view('chat');
@@ -140,8 +174,9 @@ window.TeamMap = (() => {
   get('map-start').onclick = () => { view('chat'); get('mode').value = 'teamwork'; get('prompt').focus(); };
   get('map-zoom-in').onclick = () => { zoom = Math.min(1.8,zoom + .1); scale(); };
   get('map-zoom-out').onclick = () => { zoom = Math.max(.35,zoom - .1); scale(); };
-  get('map-fit').onclick = fit;
+  get('map-fit').onclick = () => { viewDiagram('dag'); fit(); };
+  get('map-mode-agents').onclick = () => viewDiagram('agents'); get('map-mode-dag').onclick = () => viewDiagram('dag');
   get('map-follow').onclick = () => { follow = !follow; get('map-follow').setAttribute('aria-pressed',String(follow)); get('map-viewport').dataset.following = ''; schedule(); };
   view('chat');
-  return { event, restore, reset, view, configure(agents) { roster = agents || []; schedule(); }, connection(value) { connected = value; schedule(); }, end() { running = false; schedule(); } };
+  return { event, restore, reset, view, configure(data,model) { roster = data.namedAgents || []; maxAgents = data.maxAgents || maxAgents; roleModels = Object.fromEntries((data.roles || []).map(role => [role.id,role.model])); defaultModel = model || defaultModel; schedule(); }, connection(value) { connected = value; schedule(); }, end() { running = false; schedule(); } };
 })();

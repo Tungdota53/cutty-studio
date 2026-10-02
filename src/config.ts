@@ -10,6 +10,7 @@ const FileConfig = z.object({
   namedAgents: z.array(namedAgentSchema).max(32).optional(),
   model: z.string().optional(), maxAgents: z.number().int().positive().max(16).optional(), quality: z.enum(['fast', 'balanced', 'high', 'max']).optional(),
   contextWindow: z.number().int().min(4096).max(2097152).optional(), maxOutputTokens: z.number().int().min(128).max(65536).optional(),
+  maxAgentIterations: z.number().int().min(8).max(200).optional(), maxAgentToolCalls: z.number().int().min(16).max(2000).optional(),
   autoRunTests: z.boolean().optional(), reviewBeforeFinish: z.boolean().optional(), useWorktrees: z.boolean().optional(),
   models: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(), modelPool: z.array(Pool).optional(),
   sshHosts: z.record(z.string(), z.object({ host: z.string(), port: z.number().default(22), username: z.string(), identityFile: z.string().optional(), remoteWorkspace: z.string(), jumpHost: z.string().optional() })).optional()
@@ -19,6 +20,7 @@ export interface Config {
   baseUrl: string; apiKey: string; model: string; maxAgents: number; workspace: string; debug: boolean; quality: Quality;
   autoRunTests: boolean; reviewBeforeFinish: boolean; useWorktrees: boolean; models: Record<string, string | string[]>; modelPool: ModelCandidate[];
   contextWindow?: number; maxOutputTokens?: number;
+  maxAgentIterations?: number; maxAgentToolCalls?: number;
   agentProfiles?: Partial<Record<Role, Partial<RoleProfile>>>;
   namedAgents?: NamedAgent[];
   sshHosts: Record<string, { host: string; port: number; username: string; identityFile?: string; remoteWorkspace: string; jumpHost?: string }>;
@@ -38,6 +40,7 @@ export function loadConfig(workspace = process.env.VIBE_WORKSPACE || process.cwd
     quality: (process.env.VIBE_QUALITY || merged.quality || 'balanced') as Quality, autoRunTests: merged.autoRunTests ?? true,
     reviewBeforeFinish: merged.reviewBeforeFinish ?? true, useWorktrees: merged.useWorktrees ?? true, models,
     agentProfiles: merged.agentProfiles || {},
+    maxAgentIterations: merged.maxAgentIterations ?? 64, maxAgentToolCalls: merged.maxAgentToolCalls ?? 192,
     namedAgents: merged.namedAgents ?? structuredClone(defaultAgents),
     modelPool: merged.modelPool || [{ id: model, tags: ['coding', 'reasoning', 'review', 'tools'], priority: 100 }], sshHosts: merged.sshHosts || {},
     contextWindow: Number(process.env.VIBE_CONTEXT_WINDOW || merged.contextWindow || 32768), maxOutputTokens: Number(process.env.VIBE_OUTPUT_TOKENS || merged.maxOutputTokens || 4096)

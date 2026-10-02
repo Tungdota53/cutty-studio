@@ -21,15 +21,21 @@ const model = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const request = requests.at(-1), user = request.messages.findLast(message => message.role === 'user')?.content || '';
     if (user.includes('smoke-teamwork-page') && request.messages[0].content.includes('You are Vibe planner')) {
-      const content = JSON.stringify({ tasks: [{ id: 'T1', title: 'Create smoke page', role: 'coder', description: 'smoke-create-page', expectedFiles: ['smoke-teamwork.html'], dependencies: [] }, { id: 'T2', title: 'Test smoke page', role: 'tester', description: 'smoke-check-page', dependencies: ['T1'] }, { id: 'T3', title: 'Review smoke page', role: 'reviewer', description: 'smoke-review-page', dependencies: ['T2'] }, { id: 'T4', title: 'Fresh audit', role: 'tester', agentId: 'victory-auditor', phase: 'audit', description: 'smoke-audit-page', dependencies: ['T3'] }] });
+      const content = JSON.stringify({ tasks: [
+        { id:'T1', agentId:'frontend', title:'Create smoke page', role:'coder', description:'smoke-create-page', expectedFiles:['smoke-teamwork.html'], dependencies:[] },
+        { id:'T1B', agentId:'backend', title:'Create independent styles', role:'coder', description:'smoke-style-page', expectedFiles:['smoke-teamwork.css'], dependencies:[] },
+        { id:'T2', title:'Test smoke page', role:'tester', description:'smoke-check-page', dependencies:['T1','T1B'] },
+        { id:'T3', title:'Review smoke page', role:'reviewer', description:'smoke-review-page', dependencies:['T1','T1B'] },
+        { id:'T4', title:'Fresh audit', role:'tester', agentId:'victory-auditor', phase:'audit', description:'smoke-audit-page', dependencies:['T2','T3'] }
+      ] });
       res.end('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n'); return;
     }
     if (user.startsWith('smoke-') && user.endsWith('-page')) {
       const tools = request.messages.filter(message => message.role === 'tool');
       if (!tools.length) {
-        const write = user === 'smoke-create-page';
-        const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: 'smoke-teamwork.html', content: '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
-        setTimeout(() => res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'), 450); return;
+        const write = ['smoke-create-page','smoke-style-page'].includes(user);
+        const call = { index: 0, id: 'smoke-page-tool', type: 'function', function: { name: write ? 'write_file' : 'read_file', arguments: JSON.stringify(write ? { path: user === 'smoke-style-page' ? 'smoke-teamwork.css' : 'smoke-teamwork.html', content: user === 'smoke-style-page' ? 'body{color:teal}' : '<h1>alo alo</h1>' } : { path: 'smoke-teamwork.html' }) } };
+        setTimeout(() => res.end('data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [call] } }] }) + '\n\ndata: [DONE]\n\n'), 1100); return;
       }
       if (['smoke-check-page', 'smoke-audit-page'].includes(user) && tools.length === 1) {
         const call = { index: 0, id: 'smoke-executed-check', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: `node -e "process.exit(require('fs').readFileSync('smoke-teamwork.html','utf8').includes('alo alo')?0:1)"` }) } };
@@ -39,7 +45,7 @@ const model = http.createServer((req, res) => {
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ verdict: 'PASS', findings: [], evidence: ['read_file smoke-teamwork.html'] }) } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
       assert(tools.every(tool => JSON.parse(tool.content).ok));
-      if (user !== 'smoke-create-page') assert(tools.some(tool => tool.content.includes('alo alo')));
+      if (!['smoke-create-page','smoke-style-page'].includes(user)) assert(tools.some(tool => tool.content.includes('alo alo')));
       res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'Verified smoke page' } }] }) + '\n\ndata: [DONE]\n\n'); return;
     }
     const text = requests.at(-1).tools ? 'Đã kiểm tra giao diện desktop.\n\n**Sẵn sàng làm việc.**\n\n```typescript\nconst studio = "Vibe";\n```' : 'Mục tiêu: kiểm tra desktop. Giữ kết quả đã xác nhận và tiếp tục từ lượt trước.';
@@ -75,7 +81,7 @@ app.on('browser-window-created', (_, win) => {
       const profiles = JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8'));
       assert.equal(profiles.agentProfiles.reviewer.instructions, 'Review authentication with evidence');
       assert(profiles.agentProfiles.coder.skills.includes('builtin:scoped-implementation'));
-      await win.webContents.executeJavaScript(`document.querySelector('[data-agent=assistant] [data-field=model]').value='agent-specific-model';document.getElementById('team-form').requestSubmit();`);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-agent=assistant] [data-field=model]').value='agent-specific-model';document.querySelector('[data-agent=frontend] [data-field=model]').value='agent-specific-model';document.querySelector('[data-agent=backend] [data-field=model]').value='smoke-model';document.getElementById('team-form').requestSubmit();`);
       await wait(win, `document.querySelector('[data-agent=assistant] summary').textContent.includes('agent-specific-model')`);
       assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.vibe/config.json'), 'utf8')).namedAgents.find(agent=>agent.id==='assistant').model, 'agent-specific-model');
       await win.webContents.executeJavaScript(`document.getElementById('skill-search').value='review';document.getElementById('skill-search').dispatchEvent(new Event('input'));`);
@@ -108,11 +114,12 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.getElementById('new-chat').click();document.querySelector('#history button').click();`);
       await wait(win, `document.querySelectorAll('.message').length >= 2`);
       await win.webContents.executeJavaScript(`document.getElementById('mode').value='teamwork';document.getElementById('prompt').value='smoke-teamwork-page';document.getElementById('composer').requestSubmit();`);
-      await wait(win, `document.querySelector('.agent-node.running') && document.querySelectorAll('.agent-node').length===4`);
+      await wait(win, `document.querySelectorAll('.fleet-card.running').length>=2 && document.querySelectorAll('.agent-node').length===5`);
       assert.equal(await win.webContents.executeJavaScript(`document.body.dataset.view`), 'team');
+      assert(await win.webContents.executeJavaScript(`document.querySelectorAll('.active-ai-pill').length>=2 && document.getElementById('map-active-ais').textContent.includes('agent-specific-model') && document.getElementById('map-active-ais').textContent.includes('smoke-model')`));
       win.webContents.debugger.attach('1.3');
       await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name:'prefers-reduced-motion', value:'reduce' }] });
-      await win.webContents.executeJavaScript(`document.querySelector('.agent-node.running').click();document.getElementById('map-follow').click();`);
+      await win.webContents.executeJavaScript(`document.querySelector('.fleet-card.running').click();document.getElementById('map-follow').click();`);
       assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('coder')`));
       await win.webContents.capturePage();
       await new Promise(resolve => setTimeout(resolve, 150));
@@ -122,8 +129,8 @@ app.on('browser-window-created', (_, win) => {
       const report = await win.webContents.executeJavaScript(`document.getElementById('messages').textContent`);
       assert(!report.includes(': failed')); assert(!report.includes(': blocked')); assert(!fs.existsSync(path.join(root, '.git')));
       assert(report.includes('Nghiệm thu: PASS'));
-      await wait(win, `document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS'`);
-      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.map-edge').length`), 3);
+      await wait(win, `document.querySelectorAll('.agent-node.completed').length===5 && document.getElementById('map-gate').textContent==='PASS'`);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.map-edge').length`), 6);
       assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.map-edge-flow').length`), 0);
       await win.webContents.executeJavaScript(`document.querySelector('[data-task=T4]').click();document.getElementById('map-fit').click();`);
       await wait(win, `document.getElementById('map-detail-content').textContent.includes('Fresh audit')`);
@@ -139,10 +146,10 @@ app.on('browser-window-created', (_, win) => {
       assert.equal(await win.webContents.executeJavaScript(`getComputedStyle(document.querySelector('.agent-node')).animationName`), 'none');
       fs.writeFileSync('release/preview-map.png', (await win.webContents.capturePage()).toPNG());
       await win.webContents.executeJavaScript(`location.reload();`);
-      await wait(win, `document.getElementById('connection-text').textContent==='Đã kết nối' && document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS'`);
+      await wait(win, `document.getElementById('connection-text').textContent==='Đã kết nối' && document.querySelectorAll('.agent-node.completed').length===5 && document.getElementById('map-gate').textContent==='PASS'`);
       await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);
       await win.webContents.executeJavaScript(`document.querySelector('#history button[title*="smoke-teamwork-page"]').click();`);
-      await wait(win, `document.querySelectorAll('.agent-node.completed').length===4 && document.getElementById('map-gate').textContent==='PASS' && document.getElementById('map-session-label').textContent==='Phiên Teamwork'`);
+      await wait(win, `document.querySelectorAll('.agent-node.completed').length===5 && document.getElementById('map-gate').textContent==='PASS' && document.getElementById('map-session-label').textContent==='Phiên Teamwork'`);
       // History restores task states and the actual persisted acceptance verdict.
       win.setMinimumSize(480, 600); win.setSize(620, 780);
       await new Promise(resolve => setTimeout(resolve, 250));
@@ -153,7 +160,7 @@ app.on('browser-window-created', (_, win) => {
       win.setSize(1320, 900);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.exit(1); }
   });

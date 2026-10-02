@@ -23,7 +23,7 @@ Tài liệu chính thức mô tả [agent và các cuộc hội thoại song son
 
 Pha có tên rõ ràng: `survey → specification → test_design → implementation → verification → review → challenge → audit → acceptance`. Planner chọn quy mô phù hợp; câu chào hoặc việc nhỏ không bắt buộc huy động toàn bộ team. Task `general` trong Teamwork chỉ trả lời/đọc; thay đổi source phải giao cho coder. Chat trợ lý trực tiếp giữ quyền công cụ riêng. JSON task hỗ trợ `phase`, `acceptanceCriteria`, `verificationCommands`, `agentId`, `dependencies` và `expectedFiles`. Phase phải phù hợp quyền của role; đường dẫn sở hữu là tệp tương đối chính xác, không dùng wildcard hoặc đi ra ngoài workspace.
 
-Trong repo sạch, mọi worker của phiên dùng chung một worktree `implementation`. Trong thư mục thường, worker dùng trực tiếp workspace. Worker được chạy song song khi khai báo tập tệp rời nhau; tệp chồng nhau hoặc không khai báo thì chạy lần lượt. Tester/reviewer/challenger/auditor chạy lần lượt để việc sửa lỗi không đua với một verdict cũ. Các công cụ ghi/sửa tệp chặn phạm vi ngoài `expectedFiles`; lệnh shell chưa có sandbox theo tệp. Worktree chưa tự merge vào checkout gốc.
+Trong repo sạch, mọi worker của phiên dùng chung một worktree `implementation`. Trong thư mục thường, worker dùng trực tiếp workspace. Worker được chạy song song khi khai báo tập tệp rời nhau; tệp chồng nhau hoặc không khai báo thì chạy lần lượt. Từ 0.8.0, scheduler lấp slot liên tục ở nhiều pha: task mới có thể bắt đầu khi một worker độc lập khác còn chạy. Tester/reviewer/challenger/auditor độc lập chạy song song khi không có coder đang sửa nguồn. Sửa lỗi chờ tất cả validator đang chạy kết thúc rồi mới thay nguồn và vô hiệu hóa bằng chứng cũ. Các công cụ ghi/sửa tệp chặn phạm vi ngoài `expectedFiles`; lệnh shell chưa có sandbox theo tệp. Worktree chưa tự merge vào checkout gốc.
 
 Mỗi lần thử có agent ID và conversation checkpoint riêng. Phiên lưu `ORIGINAL_REQUEST.md`, `PROJECT.md`, `plan.md`, `GATE_STATUS.md`, `gate.json`, `requirements.json`; mỗi agent có `BRIEFING.md`, `DISPATCH.md`, `progress.md`, `handoff.md` và `handoff.json`. Briefing cập nhật khi lưu context; progress có heartbeat khi đang chạy. Handoff gồm Observation, Logic Chain (lý do quyết định có thể kiểm tra, không phải suy nghĩ riêng tư), Caveats, Conclusion, Verification Method và điều kiện mất hiệu lực.
 
@@ -42,17 +42,146 @@ Khi test thực thi hoặc gate báo FAIL, app có thể tạo một repair task
 ## Kế hoạch mẫu
 
 ```json
-{"tasks":[
-  {"id":"S","title":"Khảo sát","role":"planner","agentId":"explorer","phase":"survey","dependencies":[]},
-  {"id":"P","title":"Đặc tả","role":"planner","agentId":"spec-backend","phase":"specification","dependencies":["S"]},
-  {"id":"C","title":"Triển khai","role":"coder","agentId":"backend","phase":"implementation","dependencies":["P"],"expectedFiles":["src/service.ts"],"acceptanceCriteria":["Payload sai được trả lỗi có cấu trúc"]},
-  {"id":"T","title":"Kiểm thử","role":"tester","agentId":"web-tester","phase":"verification","dependencies":["C"],"verificationCommands":["npm test"]},
-  {"id":"R","title":"Review","role":"reviewer","agentId":"security-review","phase":"review","dependencies":["T"]},
-  {"id":"X","title":"Phản biện","role":"tester","agentId":"challenger","phase":"challenge","dependencies":["R"]},
-  {"id":"A","title":"Audit độc lập","role":"tester","agentId":"auditor","phase":"audit","dependencies":["X"],"verificationCommands":["npm run build","npm test"]},
-  {"id":"V","title":"Audit cuối","role":"tester","agentId":"victory-auditor","phase":"audit","dependencies":["A"],"verificationCommands":["npm run build","npm test"]},
-  {"id":"J","title":"Nghiệm thu","role":"judge","agentId":"acceptance","phase":"acceptance","dependencies":["V"]}
-]}
+{
+  "tasks": [
+    {
+      "id": "S",
+      "title": "Khảo sát",
+      "role": "planner",
+      "agentId": "explorer",
+      "phase": "survey",
+      "dependencies": []
+    },
+    {
+      "id": "P",
+      "title": "Hợp đồng chung",
+      "role": "planner",
+      "agentId": "spec-backend",
+      "phase": "specification",
+      "dependencies": [
+        "S"
+      ]
+    },
+    {
+      "id": "C1",
+      "title": "Backend",
+      "role": "coder",
+      "agentId": "backend",
+      "phase": "implementation",
+      "dependencies": [
+        "P"
+      ],
+      "expectedFiles": [
+        "src/service.ts"
+      ]
+    },
+    {
+      "id": "C2",
+      "title": "Frontend",
+      "role": "coder",
+      "agentId": "frontend",
+      "phase": "implementation",
+      "dependencies": [
+        "P"
+      ],
+      "expectedFiles": [
+        "src/view.ts"
+      ]
+    },
+    {
+      "id": "TW",
+      "title": "Viết test theo hợp đồng",
+      "role": "coder",
+      "agentId": "test-writer",
+      "phase": "test_design",
+      "dependencies": [
+        "P"
+      ],
+      "expectedFiles": [
+        "tests/service.test.ts"
+      ]
+    },
+    {
+      "id": "T",
+      "title": "Kiểm thử",
+      "role": "tester",
+      "agentId": "web-tester",
+      "phase": "verification",
+      "dependencies": [
+        "C1",
+        "C2",
+        "TW"
+      ],
+      "verificationCommands": [
+        "npm test"
+      ]
+    },
+    {
+      "id": "R",
+      "title": "Review",
+      "role": "reviewer",
+      "agentId": "security-review",
+      "phase": "review",
+      "dependencies": [
+        "C1",
+        "C2",
+        "TW"
+      ]
+    },
+    {
+      "id": "X",
+      "title": "Phản biện",
+      "role": "tester",
+      "agentId": "challenger",
+      "phase": "challenge",
+      "dependencies": [
+        "C1",
+        "C2",
+        "TW"
+      ]
+    },
+    {
+      "id": "A",
+      "title": "Audit độc lập",
+      "role": "tester",
+      "agentId": "auditor",
+      "phase": "audit",
+      "dependencies": [
+        "T",
+        "R",
+        "X"
+      ],
+      "verificationCommands": [
+        "npm run build",
+        "npm test"
+      ]
+    },
+    {
+      "id": "V",
+      "title": "Audit cuối",
+      "role": "tester",
+      "agentId": "victory-auditor",
+      "phase": "audit",
+      "dependencies": [
+        "A"
+      ],
+      "verificationCommands": [
+        "npm run build",
+        "npm test"
+      ]
+    },
+    {
+      "id": "J",
+      "title": "Nghiệm thu",
+      "role": "judge",
+      "agentId": "acceptance",
+      "phase": "acceptance",
+      "dependencies": [
+        "V"
+      ]
+    }
+  ]
+}
 ```
 
-Thêm task `test_design` dùng `test-writer` sở hữu tệp test khi cần xây test mới. Chỉ khai báo lệnh mà project có hỗ trợ; thiếu công cụ/test/build phải được báo UNVERIFIED thay vì giả định thành công.
+C1/C2/TW chạy song song sau hợp đồng P; T/R/X chạy song song sau khi ba worker hoàn tất. A hội tụ kết quả; V và J chỉ nhận việc khi có đủ đầu vào thật. Chỉ khai báo lệnh mà project có hỗ trợ; thiếu công cụ/test/build phải được báo UNVERIFIED thay vì giả định thành công.

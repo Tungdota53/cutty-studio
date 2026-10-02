@@ -1,4 +1,5 @@
 import type { Role, Message, TokenUsage } from './types.js';
+import { createHash } from 'node:crypto';
 import { ModelClient } from './model.js';
 import { ModelRouter } from './router.js';
 import { Tools, toolDefinitions } from './tools.js';
@@ -18,6 +19,7 @@ export interface AgentMemoryOptions {
   skillTask?: string;
   readOnlyTask?: boolean;
   onSkills?: (skills: Skill[]) => void;
+  onModel?: (model: string) => void;
   onContext?: (event: ContextEvent) => void;
   checkpoint?: (state: ConversationState) => void;
   onItem?: (message: Message) => void;
@@ -43,13 +45,17 @@ export class Agent {
     const definitions = toolDefinitions.filter(tool => canUseTool(this.role, tool.function.name, memoryOptions.readOnlyTask));
     const user: Message = { role: 'user', content: task };
     state.messages.push(user); memoryOptions.onItem?.(user);
-    for (let iteration = 0, toolCount = 0; iteration < 20; iteration++) {
+    const maxIterations = Math.max(8, Math.min(200, config.maxAgentIterations || 64));
+    const maxTools = Math.max(16, Math.min(2000, config.maxAgentToolCalls || 192));
+    let previousRead = '', repeatedReads = 0;
+    for (let iteration = 0, toolCount = 0; iteration < maxIterations; iteration++) {
       signal?.throwIfAborted();
       const decision = this.router.route({ role: this.role, agentId: assigned?.id, taskType: 'coding', complexity: 5, contextTokens: context.stats(system, definitions).estimatedInput, requiresTools: true, requiresLongContext: false, preferQuality: ['reviewer', 'planner'].includes(this.role) });
       let result, error: unknown, visibleOutput = false;
       const models = [decision.selectedModel, ...decision.fallbacks];
       for (const model of models) {
         signal?.throwIfAborted();
+        memoryOptions.onModel?.(model);
         const started = Date.now();
         try {
           await context.prepare(system, definitions, this.client, model, signal);
@@ -76,7 +82,7 @@ export class Agent {
       const exchange: Message[] = [answer];
       for (const call of result.toolCalls) {
         signal?.throwIfAborted();
-        if (++toolCount > 50) throw new Error('Agent vượt max tool calls');
+        if (++toolCount > maxTools) throw new Error(`Agent đã dùng ${maxTools} lượt công cụ. Context được giữ; tăng ngân sách trong Thiết lập agent nếu nhiệm vụ cần thêm.`);
         this.log?.emit('tool_start', { agentId: this.id, tool: call.function.name });
         let value;
         if (call.function.name === 'load_skill') {
@@ -95,8 +101,17 @@ export class Agent {
         this.log?.emit('tool_end', { agentId: this.id, tool: call.function.name, ok: value.ok });
       }
       state.messages.push(...exchange);
+      const readOnlyRound = result.toolCalls.every(call => ['read_file', 'search_files', 'list_files', 'git_status', 'git_diff', 'read_skill_resource'].includes(call.function.name));
+      const fingerprint = readOnlyRound ? createHash('sha256').update(JSON.stringify({ calls: result.toolCalls.map(call => call.function), results: exchange.slice(1).map(item => item.content) })).digest('hex') : '';
+      repeatedReads = fingerprint && fingerprint === previousRead ? repeatedReads + 1 : 1;
+      previousRead = fingerprint;
+      if (readOnlyRound && repeatedReads === 4) {
+        const reminder: Message = { role: 'user', content: 'Progress check: the same read tools returned identical results four times. Use the evidence already collected. For a coder task, implement the assigned files now; for validation, execute the required checks or report a concrete limitation. Do not reread unchanged files without a specific new question.' };
+        state.messages.push(reminder); memoryOptions.onItem?.(reminder);
+      }
       context.publish(system, definitions);
+      if (readOnlyRound && repeatedReads >= 8) throw new Error(`Agent không tiến triển: ${result.toolCalls.map(call => call.function.name).join(', ')} trả cùng kết quả 8 lần liên tiếp. Đã nhắc agent chuyển sang triển khai/kiểm tra; xem context đã lưu và điều chỉnh model hoặc hướng dẫn.`);
     }
-    throw new Error('Agent vượt max iterations');
+    throw new Error(`Agent đã dùng ${maxIterations} lượt suy luận. Context và kết quả công cụ được giữ; tăng ngân sách trong Thiết lập agent hoặc chia nhỏ nhiệm vụ.`);
   }
 }
