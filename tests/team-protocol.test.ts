@@ -52,7 +52,8 @@ describe('Anti-style phase and ownership protocol', () => {
     const repair = scheduleRepair(tasks, tasks[2], 'bug', 1)!;
     expect(repair.expectedFiles).toEqual(['src/a.ts']); expect(repair.dependencies).toEqual(['code']);
     for (const task of tasks.slice(1, 4)) { expect(task.status).toBe('pending'); expect(task.dependencies).toContain(repair.id); expect(task.resultSummary).toBeUndefined(); }
-    expect(scheduleRepair(tasks, tasks[2], 'bug', 3)).toBeUndefined();
+    tasks.forEach(task => task.status = 'completed'); tasks[2].status = 'failed';
+    expect(scheduleRepair(tasks, tasks[2], 'bug', 3)?.id).toBe('repair-3');
   });
   it('withholds prior verdicts from fresh forensic audit context', () => {
     const tasks = plan(); tasks[2].status = 'completed'; tasks[2].resultSummary = 'PRIOR_PASS_DO_NOT_TRUST';

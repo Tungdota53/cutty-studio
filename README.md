@@ -26,7 +26,7 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 - Agent có nhiệm vụ độc lập chạy đồng thời; số agent đang hoạt động có thể cấu hình từ 1 đến 16.
 - Mỗi tác vụ có người phụ trách, tệp được giao, tiêu chí nghiệm thu và quan hệ phụ thuộc.
 - Nhánh độc lập tiếp tục khi nhánh khác lỗi; tác vụ cần kết quả còn thiếu hiển thị rõ lý do bị chặn.
-- Pipeline lưu kết quả kiểm tra và bằng chứng, hỗ trợ vòng sửa lỗi và kiểm tra lại các bước liên quan. Công cụ `write_report` cho phép lưu JSON trong `test-results/` hoặc `reports/`, có checkpoint và không cấp quyền sửa mã nguồn cho tester/reviewer. Kết quả audit có lỗ hổng chưa xử lý vẫn chặn nghiệm thu.
+- Pipeline tự thử lại lỗi kết nối/stream tạm thời từ checkpoint, giữ kết quả công cụ đã chạy. Lỗi kiểm thử được gom để agent sửa và chạy lại các bước liên quan; không còn trần hai vòng nếu mã nguồn còn tiến triển. Cùng lỗi và cùng nguồn lặp ba lần sẽ dừng với lý do. Audit dependency có thể tạo tác vụ sửa package/lock và reviewer độc lập khi kế hoạch ban đầu chỉ gồm kiểm tra. Ngân sách, lỗi quyền truy cập, xung đột nguồn và thao tác chưa rõ kết quả vẫn được bảo vệ. Công cụ `write_report` cho phép lưu JSON trong `test-results/` hoặc `reports/`, có checkpoint và không cấp quyền sửa mã nguồn cho tester/reviewer. Kết quả audit có lỗ hổng chưa xử lý vẫn chặn nghiệm thu.
 - Nghiệm thu phân biệt dò phiên bản/import môi trường và thao tác lưu báo cáo với kiểm thử bắt buộc. Agent dùng runtime và test script của dự án; Node Playwright không yêu cầu Python. Lịch sử thử nghiệm của coder được giữ để tra cứu; kết luận dựa vào lệnh bắt buộc và tester/reviewer kiểm tra nguồn cuối. Timeout và kiểm thử thật thất bại vẫn chặn, kèm tên lệnh và nguyên nhân.
 
 ### Sơ đồ agent trực tiếp

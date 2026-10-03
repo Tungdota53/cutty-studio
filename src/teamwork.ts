@@ -18,7 +18,9 @@ import { roleSchema, roleCatalog, assignedAgent, canUseTool } from './roles.js';
 import { SkillLibrary } from './skills.js';
 import { dependencyFingerprints, qualityGate, verificationEvidence, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
 import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
-import { scheduleRepairs } from './team-repair.js';
+import { canRetryTask, repairSignature } from './team-recovery.js';
+import { setTimeout as recoveryDelay } from 'node:timers/promises';
+import { scheduleRepairs, type RepairFinding } from './team-repair.js';
 import { Pipeline } from './pipeline.js';
 import { verifyCompletedSource } from './resume-sources.js';
 import { planObject, validatedPlan } from './plan-recovery.js';
@@ -117,11 +119,14 @@ export class Teamwork {
     fs.mkdirSync(sessionRoot, { recursive: true });
     fs.writeFileSync(path.join(sessionRoot, 'ORIGINAL_REQUEST.md'), `# Original request\n\n${goal}\n`);
     const resumeFile = path.join(sessionRoot, 'resume.json');
-    const resumed = resumeId ? JSON.parse(fs.readFileSync(resumeFile, 'utf8')) as { goal: string; planRaw: string; tasks: Task[]; evidence: [string, TaskEvidence][]; fingerprints?: Record<string, Record<string, string | null>>; repairRounds: number; status: string } : undefined;
+    const resumed = resumeId ? JSON.parse(fs.readFileSync(resumeFile, 'utf8')) as { goal: string; planRaw: string; tasks: Task[]; evidence: [string, TaskEvidence][]; fingerprints?: Record<string, Record<string, string | null>>; repairRounds: number; repairFailures?: Record<string, number>; status: string } : undefined;
     const fingerprints = resumed?.fingerprints || {};
     const evidence = new Map<string, TaskEvidence>(resumed?.evidence || []);
     const pipeline = new Pipeline(sessionRoot, id, this.c.maxAgents);
     let repairRounds = resumed?.repairRounds || 0;
+    const repairFailures = resumed?.repairFailures || {};
+    const runtimeRetries: Record<string, number> = {};
+    const autoResumeTasks = new Set<string>();
     const teamBudget = new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates });
     this.db.session(id, 'running', this.c.model, goal);
     try {
@@ -252,13 +257,15 @@ export class Teamwork {
     }
     this.tasks.forEach(t => this.db.task(id, t));
     let lastSnapshot = 0;
-    const snapshot = (status = 'running') => { lastSnapshot = Date.now(); durableJson(resumeFile, { version: 1, goal, planRaw, tasks: this.tasks, evidence: [...evidence], fingerprints, repairRounds, status }); emit({ type: 'task_snapshot', pipeline: pipeline.snapshot(this.tasks, evidence), sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() }); };
+    const snapshot = (status = 'running') => { lastSnapshot = Date.now(); durableJson(resumeFile, { version: 1, goal, planRaw, tasks: this.tasks, evidence: [...evidence], fingerprints, repairRounds, repairFailures, runtimeRetries, status }); emit({ type: 'task_snapshot', pipeline: pipeline.snapshot(this.tasks, evidence), sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() }); };
     snapshot();
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
     fs.writeFileSync(path.join(sessionRoot, 'PROJECT.md'), `# Teamwork\n\nGoal: ${goal}\n\nWorkspace mode: ${workspaceMode}\n\nWorkflow: survey → specification → implementation/test writing → executed tests → independent review → adversarial checks/audit when warranted. Handoff summaries are claims; acceptance requires recorded tool evidence.\n`);
 
-    const pendingRepairs: { task: Task; reason: string }[] = [];
+    const pendingRepairs: RepairFinding[] = [];
+    const pendingRetries: { task: Task; reason: string }[] = [];
+    const taskBudgets = new Map<string, BudgetTracker>();
     const executeTask = async (t: Task, index: number) => {
           t.status = 'running';
           pipeline.dispatch(this.tasks);
@@ -355,20 +362,21 @@ export class Teamwork {
             let step = 'Starting agent'; t.lastProgressAt = new Date().toISOString(); t.step = step; let stallReported = false;
             const progress = () => writeAgentArtifact(sessionRoot, aid, 'progress.md', `# Progress\n\nStatus: RUNNING\nPhase: ${taskPhase(t)}\nTask: ${t.id}\nAttempt: ${t.retries || 0}\nLast heartbeat: ${new Date().toISOString()}\nLast actual progress: ${t.lastProgressAt}\nProgress idle seconds: ${Math.floor((Date.now() - Date.parse(t.lastProgressAt!)) / 1000)}\nCurrent step: ${step}\n`);
             heartbeat = setInterval(() => { try { const idleMs = Date.now() - Date.parse(t.lastProgressAt!); t.stalled = idleMs >= 90000; if (t.stalled && !stallReported) { stallReported = true; emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', stalled: true, lastProgressAt: t.lastProgressAt, step, message: `Chưa có tiến độ ${Math.floor(idleMs / 1000)} giây · ${step}. Đang chờ kết quả; heartbeat không phải tiến độ.`, timestamp: new Date().toISOString() }); } progress(); if (Date.now() - lastSnapshot >= 1000) snapshot(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
-            const taskEvidence: TaskEvidence = resumed && evidence.get(t.id) ? evidence.get(t.id)! : { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
+            const taskEvidence: TaskEvidence = (resumed || autoResumeTasks.has(t.id)) && evidence.get(t.id) ? evidence.get(t.id)! : { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
             if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t))) taskEvidence.files = dependencyFingerprints(t, this.tasks, scope);
             evidence.set(t.id, taskEvidence);
             const calls = new Map<string, string>();
             const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve, t.role, library, t.role === 'coder' ? t.expectedFiles : undefined, t.role === 'general'), log);
             const memoryKey = `${id}:${t.id}:attempt-${t.retries || 0}`;
             const journal = new RunJournal(this.c.workspace, memoryKey);
-            const resumeTask = !!resumed && journal.status().resumable;
+            const taskBudget = taskBudgets.get(memoryKey) || new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates, agentId: aid, taskId: t.id }); taskBudgets.set(memoryKey, taskBudget);
+            const resumeTask = (!!resumed || autoResumeTasks.has(t.id)) && journal.status().resumable;
             const state = resumeTask ? this.db.conversation(memoryKey) : newConversation(taskHandoff(goal, t, this.tasks, Math.floor((this.c.contextWindow || 1048576) / 5), taskPhase(t) === 'audit'));
             const sessionMemory = this.db.conversation(id); state.pins = sessionMemory.pins; state.attachments = sessionMemory.attachments;
             state.messages.push({ role: 'user', content: dispatch });
             t.resultSummary = await agent.run(t.description, this.abort.signal, undefined, [], {
               state,
-              journal, resume: resumeTask, budgetTracker: new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates, agentId: aid, taskId: t.id }), onBudget: budget => emit({ type: 'agent_status', agentId: aid, taskId: t.id, sessionId: id, step: 'budget', budget }),
+              journal, resume: resumeTask, budgetTracker: taskBudget, onBudget: budget => emit({ type: 'agent_status', agentId: aid, taskId: t.id, sessionId: id, step: 'budget', budget }),
               readOnlyTask: t.role === 'general',
               skills: t.skills,
               namedAgentId: assigned?.id,
@@ -431,8 +439,12 @@ export class Teamwork {
             const failedProof = evidence.get(t.id);
             attemptReport = structuredHandoff(t, failedProof);
             writeAgentArtifact(sessionRoot, aid, 'handoff.json', JSON.stringify(attemptReport, null, 2));
-            if (!isAborted && (verificationEvidence(t, failedProof).failedChecks > 0 || reviewVerdict(t) === 'FAIL')) pendingRepairs.push({ task: t, reason: String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []) });
+            const uncertainEffects = new RunJournal(this.c.workspace, `${id}:${t.id}:attempt-${t.retries || 0}`).status().uncertain;
+            if (!isAborted && uncertainEffects.length) t.error += '\nKhông tự phát lại thao tác chưa rõ kết quả: cần kiểm tra trạng thái tệp/công cụ trước.';
+            if (!isAborted && canRetryTask(e, uncertainEffects) && (runtimeRetries[t.id] || 0) < 2) pendingRetries.push({ task: t, reason: String(e) });
+            else if (!isAborted && !uncertainEffects.length && !/Integrity veto|budget|ngân sách/i.test(String(e)) && (verificationEvidence(t, failedProof).failedChecks > 0 || reviewVerdict(t) === 'FAIL')) pendingRepairs.push({ task: t, reason: String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []), repairFiles: failedProof?.checks?.some(check => check.exitCode !== 0 && /^npm audit(?: --json)?$/.test(check.command.trim())) ? ['package.json','package-lock.json'].filter(file => fs.existsSync(path.join(scope,file))) : [] });
 
+            if (!isAborted && canRetryTask(e) && (runtimeRetries[t.id] || 0) >= 2) t.error += '\nTự thử lại đã dừng sau hai lần phục hồi bổ sung: lỗi kết nối vẫn còn; checkpoint được giữ.';
             this.agents.set(aid, {
               role: t.role,
               status,
@@ -452,7 +464,7 @@ export class Teamwork {
               role: t.role,
               status,
               taskId: t.id,
-              message: String(e),
+              message: t.error || String(e),
               timestamp: new Date().toISOString(),
             });
           } finally {
@@ -468,23 +480,42 @@ export class Teamwork {
 
     const pool = new Map<string, Promise<void>>();
     let dispatchIndex = 0, fatalError: unknown;
-    while (pool.size || pendingRepairs.length || this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
+    while (pool.size || pendingRepairs.length || pendingRetries.length || this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
+      if (!pool.size && pendingRetries.length) {
+        for (const retry of pendingRetries.splice(0)) {
+          if (this.abort.signal.aborted) break;
+          runtimeRetries[retry.task.id] = (runtimeRetries[retry.task.id] || 0) + 1;
+          emit({ type: 'agent_status', taskId: retry.task.id, status: 'pending', step: 'recovery', message: `Tự phục hồi ${retry.task.id}: thử lại lỗi tạm thời (${runtimeRetries[retry.task.id]}/2), giữ checkpoint và kết quả công cụ đã chạy.` });
+          try { await recoveryDelay(500 * runtimeRetries[retry.task.id], undefined, { signal: this.abort.signal }); } catch { break; }
+          retry.task.status = 'pending'; delete retry.task.error; delete retry.task.completedAt; autoResumeTasks.add(retry.task.id);
+          log.emit('task_auto_retry', { taskId: retry.task.id, attempt: runtimeRetries[retry.task.id], reason: retry.reason }); this.db.task(id, retry.task);
+        }
+      }
       // Drain concurrent validators before a repair invalidates their source and evidence.
       if (!pool.size && pendingRepairs.length) {
         const findings = pendingRepairs.splice(0).filter(failure => failure.task.status === 'failed');
-        const repair = !this.abort.signal.aborted && scheduleRepairs(this.tasks, findings, repairRounds + 1);
+        const sources = Object.assign({}, ...findings.map(failure => dependencyFingerprints(failure.task, this.tasks, failure.task.worktreePath || this.c.workspace)));
+        for(const failure of findings)for(const file of failure.repairFiles || []){const target=path.join(failure.task.worktreePath || this.c.workspace,file);try{sources[target]=crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex');}catch{sources[target]=null;}}
+        const signature = repairSignature(findings, evidence, sources);
+        repairFailures[signature] = (repairFailures[signature] || 0) + 1;
+        const stalled = repairFailures[signature] >= 3;
+        const repair = !this.abort.signal.aborted && !stalled && scheduleRepairs(this.tasks, findings, repairRounds + 1);
+        if (!repair && !this.abort.signal.aborted) for (const {task} of findings) {
+          task.error += stalled ? '\nTự sửa đã dừng: cùng lỗi và cùng mã nguồn lặp lại 3 lần, không có tiến triển.' : '\nTự sửa đã dừng: không xác định được tệp nguồn thuộc phạm vi sửa hoặc pipeline đã đạt giới hạn 48 tác vụ.';
+          emit({type:'agent_status',taskId:task.id,status:'failed',step:'recovery_stopped',message:task.error}); this.db.task(id,task);
+        }
         if (repair) {
           repairRounds++;
           pipeline.repair(repairRounds, repair.id, findings.map(failure => `${failure.task.id}: ${failure.reason.slice(0, 500)}`));
           for (const task of this.tasks) { if (task.status === 'pending') evidence.delete(task.id); this.db.task(id, task); }
           log.emit('repair_scheduled', { round: repairRounds, repairId: repair.id, findings: findings.map(failure => ({ taskId: failure.task.id, reason: failure.reason })) });
-          emit({ type: 'agent_status', taskId: repair.id, status: 'pending', message: `Vòng sửa ${repairRounds}/2: gom ${findings.length} lỗi từ ${findings.map(failure => failure.task.id).join(', ')}; chạy lại toàn bộ tác vụ phụ thuộc bị ảnh hưởng.` });
+          emit({ type: 'agent_status', taskId: repair.id, status: 'pending', message: `Tự sửa vòng ${repairRounds}: gom ${findings.length} lỗi từ ${findings.map(failure => failure.task.id).join(', ')}; chạy lại toàn bộ tác vụ phụ thuộc bị ảnh hưởng.` });
         }
       }
       if (fatalError) { if (pool.size) { await Promise.all(pool.values()); continue; } throw fatalError; }
       if (this.abort.signal.aborted) {
         for (const task of this.tasks) if (['pending', 'ready'].includes(task.status)) { task.status = 'cancelled'; this.db.task(id, task); }
-      } else if (!pendingRepairs.length) {
+      } else if (!pendingRepairs.length && !pendingRetries.length) {
         updateReady(this.tasks);
         this.tasks.filter(t => t.status === 'blocked').forEach(t => {
           t.error ||= `Bị chặn bởi tác vụ: ${t.dependencies.filter(dep => ['failed', 'blocked', 'cancelled'].includes(this.tasks.find(task => task.id === dep)!.status)).join(', ')}`;
@@ -497,7 +528,7 @@ export class Teamwork {
       }
       snapshot();
       if (pool.size) { await Promise.race(pool.values()); continue; }
-      if (pendingRepairs.length) continue;
+      if (pendingRepairs.length || pendingRetries.length) continue;
       if (this.tasks.some(t => !['completed', 'failed', 'blocked', 'cancelled'].includes(t.status))) {
         this.tasks.filter(t => ['pending', 'ready'].includes(t.status)).forEach(t => { t.status = 'blocked'; this.db.task(id, t); });
         snapshot(); throw new Error('Scheduler deadlock: không có task có thể chạy');
@@ -512,7 +543,7 @@ export class Teamwork {
     for (const proof of evidence.values()) proof.stale = staleEvidence(proof);
     const gate = qualityGate(this.tasks, evidence);
     const rows = this.tasks.map(task => `| ${task.id} | ${taskPhase(task)} | ${task.status} | ${reviewVerdict(task)} | ${verificationEvidence(task, evidence.get(task.id)).successfulChecks} | ${evidence.get(task.id)?.stale ? 'STALE' : 'current'} |`).join('\n');
-    fs.writeFileSync(path.join(sessionRoot, 'GATE_STATUS.md'), `# Acceptance: ${gate.verdict}\n\n${gate.reasons.map(reason => '- ' + reason).join('\n')}\n\n| Task | Phase | Execution | Report verdict | Successful checks | Source evidence |\n|---|---|---|---|---|---|\n${rows}\n\nRepair rounds: ${repairRounds}/2\nTask completion alone does not establish correctness. Successful commands are recorded execution evidence; their assertions still require review.\n`);
+    fs.writeFileSync(path.join(sessionRoot, 'GATE_STATUS.md'), `# Acceptance: ${gate.verdict}\n\n${gate.reasons.map(reason => '- ' + reason).join('\n')}\n\n| Task | Phase | Execution | Report verdict | Successful checks | Source evidence |\n|---|---|---|---|---|---|\n${rows}\n\nRepair rounds: ${repairRounds}\nTask completion alone does not establish correctness. Successful commands are recorded execution evidence; their assertions still require review.\n`);
     fs.writeFileSync(path.join(sessionRoot, 'gate.json'), JSON.stringify({ ...gate, repairRounds, tasks: this.tasks.map(task => ({ id: task.id, phase: taskPhase(task), status: task.status, evidence: evidence.get(task.id) || null })) }, null, 2));
     const requirements = this.tasks.flatMap(task => (task.acceptanceCriteria || []).map(criterion => ({ taskId: task.id, criterion, requiredCommands: task.verificationCommands || [], checks: evidence.get(task.id)?.checks || [], stale: evidence.get(task.id)?.stale || false })));
     fs.writeFileSync(path.join(sessionRoot, 'requirements.json'), JSON.stringify({ goal, criteria: requirements, note: 'Natural-language criteria are declared contracts. Recorded execution evidence does not automatically prove every criterion; independent review/audit must evaluate them.' }, null, 2));

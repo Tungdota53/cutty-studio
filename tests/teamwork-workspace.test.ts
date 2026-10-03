@@ -32,6 +32,57 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('automatically repairs an audit-only plan in manifest scope and obtains independent review',async()=>{
+    const dir=root();fs.writeFileSync(path.join(dir,'package.json'),'{"private":true}');let fixed=false;const original=Tools.prototype.execute;
+    vi.spyOn(Tools.prototype,'execute').mockImplementation(async function(this:Tools,name,raw,signal){if(name==='run_command'&&JSON.parse(raw).command==='npm audit --json')return {ok:fixed,output:fixed?'exit=0\n0 vulnerabilities':'exit=1\nhigh vulnerability',...(fixed?{}:{error:'audit failed'})};if(name==='write_file')fixed=true;return original.call(this,name,raw,signal);});
+    try{
+      const {team}=runner(dir,[{id:'audit',role:'tester',title:'Audit',description:'audit',verificationCommands:['npm audit --json']}],async messages=>{
+        const request=messages.findLast(m=>m.role==='user')?.content||'';
+        if(!messages.some(m=>m.role==='tool'))return {content:'',toolCalls:[{id:'call',type:'function',function:{name:request==='audit'?'run_command':request.startsWith('[REPAIR]')?'write_file':'read_file',arguments:JSON.stringify(request==='audit'?{command:'npm audit --json'}:request.startsWith('[REPAIR]')?{path:'package.json',content:'{"private":true,"description":"fixed"}'}:{path:'package.json'})}}]};
+        return {content:request==='audit'||request.startsWith('[REPAIR]')?'done':'{"verdict":"PASS","findings":[]}',toolCalls:[]};
+      });
+      const result=await team.run('Fix audited dependency',()=>{});expect(result.gate.verdict).toBe('PASS');expect(result.tasks.find(t=>t.id==='repair-1')?.expectedFiles).toEqual(['package.json']);expect(result.tasks.find(t=>t.id==='repair-review-1')?.status).toBe('completed');
+    }finally{vi.restoreAllMocks();}
+  });
+
+  it('automatically recovers transport interruption without replanning or replaying completed writes',async()=>{
+    const dir=root();let writes=0,failures=0;const original=Tools.prototype.execute;
+    vi.spyOn(Tools.prototype,'execute').mockImplementation(async function(this:Tools,name,raw,signal){if(name==='write_file')writes++;return original.call(this,name,raw,signal);});
+    try{
+      const {team}=runner(dir,[{id:'code',role:'coder',title:'Create',description:'create',expectedFiles:['a.txt']}],async messages=>{
+        if(!messages.some(m=>m.role==='tool'))return {content:'',toolCalls:[{id:'write',type:'function',function:{name:'write_file',arguments:'{"path":"a.txt","content":"saved"}'}}]};
+        if(failures++<3)throw new ModelStreamInterruptedError('terminated','',true);
+        return {content:'done',toolCalls:[]};
+      });
+      const events:any[]=[],result=await team.run('Create',event=>events.push(event));
+      expect(result.tasks[0].status).toBe('completed');expect(writes).toBe(1);expect(events.filter(e=>e.type==='planner_start')).toHaveLength(1);expect(events.some(e=>e.step==='recovery')).toBe(true);
+    }finally{vi.restoreAllMocks();}
+  });
+  it('continues beyond two repair rounds while source changes, and rechecks the final source',async()=>{
+    const dir=root();let fixes=0;const command='node -e "process.exit(0)"',original=Tools.prototype.execute;
+    vi.spyOn(Tools.prototype,'execute').mockImplementation(async function(this:Tools,name,raw,signal){if(name==='run_command'&&JSON.parse(raw).command===command)return {ok:fixes>=3,output:fixes>=3?'exit=0\npassed':'exit=1\nnot fixed',...(fixes>=3?{}:{error:'failed'})};return original.call(this,name,raw,signal);});
+    try{
+      const {team}=runner(dir,[{id:'code',role:'coder',title:'Code',description:'create',expectedFiles:['a.txt']},{id:'test',role:'tester',title:'Verify',description:'verify',dependencies:['code'],verificationCommands:[command]},{id:'review',role:'reviewer',title:'Review',description:'review',dependencies:['test']}],async messages=>{
+        const request=messages.findLast(m=>m.role==='user')?.content||'';
+        if(!messages.some(m=>m.role==='tool')){
+          if(request==='create'||request.startsWith('[REPAIR]')){if(request.startsWith('[REPAIR]'))fixes++;return {content:'',toolCalls:[{id:'write',type:'function',function:{name:'write_file',arguments:JSON.stringify({path:'a.txt',content:'progress '+fixes})}}]};}
+          return {content:'',toolCalls:[{id:'check',type:'function',function:{name:request==='verify'?'run_command':'read_file',arguments:JSON.stringify(request==='verify'?{command}:{path:'a.txt'})}}]};
+        }
+        return {content:request==='review'?'{"verdict":"PASS","findings":[]}':'done',toolCalls:[]};
+      });
+      const result=await team.run('Repair until correct',()=>{});expect(result.gate.verdict).toBe('PASS');expect(fixes).toBe(3);expect(result.tasks.find(t=>t.id==='repair-3')?.status).toBe('completed');
+    }finally{vi.restoreAllMocks();}
+  });
+  it('stops unchanged repeated repairs with a clear reason without weakening the failed test',async()=>{
+    const dir=root(),command='node -e "process.exit(1)"';
+    const {team}=runner(dir,[{id:'code',role:'coder',title:'Code',description:'create',expectedFiles:['a.txt']},{id:'test',role:'tester',title:'Verify',description:'verify',dependencies:['code'],verificationCommands:[command]}],async messages=>{
+      const request=messages.findLast(m=>m.role==='user')?.content||'';
+      if(!messages.some(m=>m.role==='tool'))return {content:'',toolCalls:[{id:'call',type:'function',function:{name:request==='verify'?'run_command':'write_file',arguments:JSON.stringify(request==='verify'?{command}:{path:'a.txt',content:'unchanged'})}}]};
+      return {content:'done',toolCalls:[]};
+    });
+    const result=await team.run('Try to repair',()=>{});expect(result.gate.verdict).toBe('FAIL');expect(result.tasks.filter(t=>/^repair-\d+$/.test(t.id))).toHaveLength(2);expect(result.tasks.find(t=>t.id==='test')?.error).toContain('không có tiến triển');
+  });
+
   it('resumes a finished failed validator with fresh evidence while archiving the old attempt',async()=>{
     const dir=root(),command='node -e "process.exit(0)"';let healed=false,executions=0;
     const original=Tools.prototype.execute;
@@ -105,7 +156,7 @@ describe('Teamwork workspace mode', () => {
       return { content: 'completed independent work', toolCalls: [] };
     });
     const result = await team.run('Continue independent work after transient transport failure', () => {});
-    expect(failedAttempts).toBe(3);
+    expect(failedAttempts).toBe(9);
     expect(result.tasks.find(task => task.id === 'failed')?.status).toBe('failed');
     expect(result.tasks.find(task => task.id === 'blocked')?.status).toBe('blocked');
     expect(result.tasks.filter(task => ['independent', 'next'].includes(task.id)).every(task => task.status === 'completed')).toBe(true);
