@@ -5,8 +5,10 @@ import { execa, execaCommand } from 'execa';
  */
 export async function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ exitCode?: number; stdout: string; stderr: string }> {
   signal?.throwIfAborted();
-  const child = execaCommand(command, { cwd, shell: true, windowsHide: true, reject: false,
-    detached: process.platform !== 'win32', maxBuffer: 2 * 1024 * 1024 });
+  const options = { cwd, windowsHide: true, reject: false as const, detached: process.platform !== 'win32', maxBuffer: 2 * 1024 * 1024 };
+  const child = process.platform === 'win32' && /^\s*@['"]\r?\n/.test(command)
+    ? execa('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], options)
+    : execaCommand(command, { ...options, shell: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopping: Promise<never> | undefined;
   let rejectDeadline: (error: Error) => void = () => {};

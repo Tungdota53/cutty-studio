@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Task } from './types.js';
-import { executionDiagnosis, verificationEvidence, isEnvironmentProbe, type TaskEvidence } from './team-artifacts.js';
+import { executionDiagnosis, verificationEvidence, isEnvironmentProbe, isReportCommand, type TaskEvidence } from './team-artifacts.js';
 import { taskPhase } from './team-protocol.js';
 import { redact } from './security.js';
 
@@ -51,7 +51,7 @@ export class Pipeline {
           id: task.id, title: task.title, phase: taskPhase(task), status: task.status, model: task.model,
           dependencies: task.dependencies, attempt: task.retries || 0, error: task.error || null,
           criteria: task.acceptanceCriteria || [], requiredCommands: task.verificationCommands || [],
-          evidence: proof ? { requiredPassed: (task.verificationCommands || []).filter(command => proof.checks?.some(check => check.exitCode === 0 && check.command.trim() === command.trim())).length, executionErrors: proof.executionErrors || [], inspected: proof.inspected, stale: proof.stale || false, checks: (proof.checks || []).map(check => ({ command: check.command, exitCode: check.exitCode, excerpt: check.excerpt.slice(0, 800), kind: isEnvironmentProbe(check.command, task.verificationCommands) ? 'probe' : 'verification' })) } : null
+          evidence: proof ? { requiredPassed: (task.verificationCommands || []).filter(command => proof.checks?.some(check => check.exitCode === 0 && check.command.trim() === command.trim())).length, executionErrors: proof.executionErrors || [], inspected: proof.inspected, stale: proof.stale || false, checks: (proof.checks || []).map(check => ({ command: check.command, exitCode: check.exitCode, excerpt: check.excerpt.slice(0, 800), kind: isEnvironmentProbe(check.command, task.verificationCommands) ? 'probe' : isReportCommand(check.command, task.verificationCommands) ? 'artifact' : 'verification' })) } : null
         };
       })
     };

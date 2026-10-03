@@ -55,7 +55,7 @@ export function loadConfig(workspace = process.env.VIBE_WORKSPACE || process.cwd
     reviewBeforeFinish: merged.reviewBeforeFinish ?? true, useWorktrees: merged.useWorktrees ?? true, models,
     agentProfiles: merged.agentProfiles || {},
     maxAgentIterations: merged.maxAgentIterations ?? 0, maxAgentToolCalls: merged.maxAgentToolCalls ?? 0,
-    namedAgents: merged.namedAgents ?? structuredClone(defaultAgents),
+    namedAgents: (merged.namedAgents ?? structuredClone(defaultAgents)).map(agent => agent.instructions === 'Test web interfaces. Check Python and Playwright availability before browser tests.' ? { ...agent, instructions: defaultAgents.find(item => item.id === 'web-tester')?.instructions || 'Test using the project runtime. Node Playwright does not require Python. Save JSON evidence with write_report.' } : agent),
     modelPool: merged.modelPool || [{ id: model, tags: ['coding', 'reasoning', 'review', 'tools'], priority: 100 }], sshHosts: merged.sshHosts || {},
     contextMode, contextWindow, maxOutputTokens: Number(process.env.VIBE_OUTPUT_TOKENS || merged.maxOutputTokens || 4096)
   };

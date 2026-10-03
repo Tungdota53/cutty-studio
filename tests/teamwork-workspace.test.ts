@@ -32,6 +32,24 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('resumes a finished failed validator with fresh evidence while archiving the old attempt',async()=>{
+    const dir=root(),command='node -e "process.exit(0)"';let healed=false,executions=0;
+    const original=Tools.prototype.execute;
+    vi.spyOn(Tools.prototype,'execute').mockImplementation(async function(this:Tools,name,raw,signal){if(name==='run_command'&&JSON.parse(raw).command===command){executions++;return {ok:healed,output:healed?'exit=0\npassed':'exit=1\nfailed',...(healed?{}:{error:'failed'})};}return original.call(this,name,raw,signal);});
+    try{
+      const {team}=runner(dir,[{id:'test',role:'tester',title:'Verify',description:'verify',verificationCommands:[command]}],async messages=>{
+        if(!messages.some(m=>m.role==='tool'))return {content:'',toolCalls:[{id:'check',type:'function',function:{name:'run_command',arguments:JSON.stringify({command})}}]};
+        return {content:'done',toolCalls:[]};
+      });
+      const first=await team.run('Verify existing project',event=>{if(typeof event!=='string'&&event.type==='task_failed')team.stop();});
+      expect(first.tasks[0].status).toBe('failed');healed=true;
+      const events:any[]=[],second=await team.resume(first.id,event=>events.push(event));
+      expect(second.gate.verdict).toBe('PASS');expect(executions).toBe(2);expect(second.tasks[0].retries).toBe(1);expect(events.some(e=>e.type==='planner_start')).toBe(false);
+      const history=path.join(dir,'.vibe','sessions',first.id,'evidence-history');const records=fs.readdirSync(history).map(file=>JSON.parse(fs.readFileSync(path.join(history,file),'utf8')));
+      expect(records[0].evidence.checks[0].exitCode).toBe(1);
+    }finally{vi.restoreAllMocks();}
+  });
+
   it('continues dependent review when required execution passes despite an optional Python probe failure', async () => {
     const dir=root(), command='node -e "process.exit(0)"';
     const original=Tools.prototype.execute;

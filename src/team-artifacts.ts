@@ -5,21 +5,33 @@ import { safePath } from './security.js';
 import type { Message, Task } from './types.js';
 import { taskPhase } from './team-protocol.js';
 
-export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number; commands?: Record<string, string>; checks?: { command: string; exitCode: number; excerpt: string; kind?: 'probe' | 'verification' }[]; executionErrors?: { command: string; error: string }[]; files?: Record<string, string | null>; stale?: boolean }
+export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number; commands?: Record<string, string>; checks?: { command: string; exitCode: number; excerpt: string; kind?: 'probe' | 'artifact' | 'verification' }[]; executionErrors?: { command: string; error: string }[]; files?: Record<string, string | null>; stale?: boolean }
 /** Only exact, standalone runtime version probes are advisory. Compound commands,
  * test runners and explicitly required probes remain acceptance evidence. */
 export function isEnvironmentProbe(command: string, required: readonly string[] = []) {
   const normalized = command.trim().replace(/\s+/g, ' ');
-  return !required.some(item => item.trim().replace(/\s+/g, ' ') === normalized) && /^(?:python(?:3)?|py|node|npm|npx|git|ruby|go|cargo|rustc|java)(?:\.exe)? (?:--version|-V)$/i.test(normalized);
+  if (required.some(item => item.trim().replace(/\s+/g, ' ') === normalized)) return false;
+  if (/^(?:python(?:3)?|py|node|npm|npx|git|ruby|go|cargo|rustc|java)(?:\.exe)? (?:--version|-V)$/i.test(normalized)) return true;
+  // A narrowly recognized import-only availability check. Tests, assertions,
+  // additional statements and shell chains never receive this exemption.
+  const python = command.trim().match(/^(?:python(?:3)?|py)(?:\.exe)? -c (["'])([\s\S]+)\1$/i);
+  return !!python && /^import [a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\s*;\s*print\((['"])[^'"\r\n]*\1\)\s*;?$/.test(python[2]);
 }
+export function isReportCommand(command: string, required: readonly string[] = []) {
+  if (required.some(item => item.trim() === command.trim())) return false;
+  const match = command.trim().match(/^@'\r?\n([\s\S]*)\r?\n'@\s*\|\s*Set-Content\s+-Path\s+(['"])((?:test-results|reports)\/[a-zA-Z0-9_./-]+\.json)\2\s+-Encoding\s+utf8\s*$/i);
+  if (!match || match[3].split('/').some(part => part === '..' || part === '.' || !part)) return false;
+  try { const value = JSON.parse(match[1]); return !!value && typeof value === 'object' && !Array.isArray(value); } catch { return false; }
+}
+export function isAdvisoryCommand(command: string, required: readonly string[] = []) { return isEnvironmentProbe(command, required) || isReportCommand(command, required); }
 export function verificationEvidence(task: Pick<Task, 'verificationCommands'>, proof?: TaskEvidence) {
   if (!proof) return { successfulChecks: 0, failedChecks: 0, warnings: 0, failures: [] as string[] };
   if (!proof.checks && !proof.executionErrors) return { successfulChecks: proof.successfulChecks, failedChecks: proof.failedChecks, warnings: 0, failures: [] as string[] };
-  const checks = (proof.checks || []).filter(check => !isEnvironmentProbe(check.command, task.verificationCommands));
-  const errors = (proof.executionErrors || []).filter(error => !isEnvironmentProbe(error.command, task.verificationCommands));
+  const checks = (proof.checks || []).filter(check => !isAdvisoryCommand(check.command, task.verificationCommands));
+  const errors = (proof.executionErrors || []).filter(error => !isAdvisoryCommand(error.command, task.verificationCommands));
   return { successfulChecks: checks.filter(check => check.exitCode === 0).length,
     failedChecks: checks.filter(check => check.exitCode !== 0).length + errors.length,
-    warnings: (proof.checks || []).filter(check => check.exitCode !== 0 && isEnvironmentProbe(check.command, task.verificationCommands)).length + (proof.executionErrors || []).filter(error => isEnvironmentProbe(error.command, task.verificationCommands)).length,
+    warnings: (proof.checks || []).filter(check => check.exitCode !== 0 && isAdvisoryCommand(check.command, task.verificationCommands)).length + (proof.executionErrors || []).filter(error => isAdvisoryCommand(error.command, task.verificationCommands)).length,
     failures: [...checks.filter(check => check.exitCode !== 0).map(check => `${check.command.slice(0, 200)} · exit=${check.exitCode}`), ...errors.map(error => `${error.command.slice(0, 200)} · ${error.error.slice(0, 300)}`)] };
 }
 /** Development experiments remain in the log. A coder is accepted only through
@@ -76,13 +88,13 @@ export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map
     if (result.ok === false) {
       const command = evidence.commands?.[item.tool_call_id || ''] || (tool === 'run_tests' ? 'run_tests' : '');
       (evidence.executionErrors ||= []).push({ command, error: typeof result.error === 'string' ? result.error : 'Command did not produce a completed execution result' });
-      if (!isEnvironmentProbe(command, required)) evidence.failedChecks++;
+      if (!isAdvisoryCommand(command, required)) evidence.failedChecks++;
     }
     return;
   }
   if (result.ok !== true && exit[1] === '0') return;
   const command = output.match(/^command=([^\r\n]+)/)?.[1] || evidence.commands?.[item.tool_call_id || ''] || '';
-  const kind = isEnvironmentProbe(command, required) ? 'probe' : 'verification';
+  const kind = isEnvironmentProbe(command, required) ? 'probe' : isReportCommand(command, required) ? 'artifact' : 'verification';
   (evidence.checks ||= []).push({ command, exitCode: Number(exit[1]), excerpt: output.slice(0, 3000), kind });
   if (kind === 'verification') { if (exit[1] === '0') evidence.successfulChecks++; else evidence.failedChecks++; }
 }

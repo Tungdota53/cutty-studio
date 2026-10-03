@@ -134,6 +134,11 @@ export class Teamwork {
       const invalidated = new Set(this.tasks.filter(task => task.status === 'completed' && task.role !== 'coder' && evidence.get(task.id) && staleEvidence(evidence.get(task.id)!)).map(task => task.id));
       for (let changed = true; changed;) { changed = false; for (const task of this.tasks) if (task.role !== 'coder' && task.status === 'completed' && !invalidated.has(task.id) && task.dependencies.some(id => invalidated.has(id))) { invalidated.add(task.id); changed = true; } }
       for (const task of this.tasks) {
+        if (task.status === 'failed' && ['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(task)) && new RunJournal(this.c.workspace, `${id}:${task.id}:attempt-${task.retries || 0}`).status().status === 'completed') {
+          const previous = evidence.get(task.id);
+          if (previous) { const history = path.join(sessionRoot, 'evidence-history'); fs.mkdirSync(history, { recursive: true }); fs.writeFileSync(path.join(history, crypto.randomUUID() + '.json'), JSON.stringify({ taskId: task.id, attempt: task.retries || 0, recordedAt: new Date().toISOString(), evidence: previous }, null, 2)); }
+          evidence.delete(task.id); task.retries = (task.retries || 0) + 1; delete task.resultSummary; delete task.loadedSkills;
+        }
         if (invalidated.has(task.id)) { task.status = 'pending'; task.retries = (task.retries || 0) + 1; evidence.delete(task.id); delete task.resultSummary; delete task.loadedSkills; }
         if (task.status !== 'completed') { task.status = 'pending'; delete task.error; delete task.startedAt; delete task.completedAt; }
       }

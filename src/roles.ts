@@ -37,12 +37,12 @@ export function assignedAgent(config: Partial<Config>, id: string | undefined, r
   const agent = config.namedAgents?.find(item => item.id === id);
   if (!agent || !agent.enabled) throw new Error(`Agent không khả dụng: ${id}`);
   if (agent.role !== role) throw new Error(`Agent ${id} có vai ${agent.role}, không phù hợp vai ${role}`);
-  return agent;
+  return agent.instructions === 'Test web interfaces. Check Python and Playwright availability before browser tests.' ? { ...agent, instructions: defaultAgents.find(item => item.id === 'web-tester')!.instructions } : agent;
 }
 export const defaultAgents: NamedAgent[] = [
   { id: 'frontend', name: 'Frontend', role: 'coder', skills: ['github:anthropic/frontend-design'], instructions: 'Build and refine user interfaces.', model: '', enabled: true },
   { id: 'backend', name: 'Backend', role: 'coder', skills: [], instructions: 'Implement backend and data logic.', model: '', enabled: true },
-  { id: 'web-tester', name: 'Web Tester', role: 'tester', skills: ['github:anthropic/webapp-testing'], instructions: 'Test web interfaces. Check Python and Playwright availability before browser tests.', model: '', enabled: true },
+  { id: 'web-tester', name: 'Web Tester', role: 'tester', skills: ['github:anthropic/webapp-testing'], instructions: 'Test web interfaces using the project runtime and existing test scripts. Node Playwright does not require Python. Save JSON evidence with write_report.', model: '', enabled: true },
   { id: 'security-review', name: 'Security Reviewer', role: 'reviewer', skills: ['github:openai/security-best-practices'], instructions: 'Review security when assigned a security task. Report findings without changing code.', model: '', enabled: true },
   { id: 'planner', name: 'Planner', role: 'planner', skills: [], instructions: '', model: '', enabled: true },
   { id: 'assistant', name: 'Assistant', role: 'general', skills: [], instructions: '', model: '', enabled: true },
