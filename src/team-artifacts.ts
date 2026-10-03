@@ -31,8 +31,12 @@ export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map
   if (item.role !== 'tool') return;
   let result: { ok?: boolean; output?: string };
   try { result = JSON.parse(item.content || '{}'); } catch { evidence.toolErrors++; return; }
-  if (!result || typeof result !== 'object' || result.ok !== true) { evidence.toolErrors++; return; }
+  if (!result || typeof result !== 'object') { evidence.toolErrors++; return; }
   const tool = calls.get(item.tool_call_id || '');
+  if (result.ok !== true) {
+    evidence.toolErrors++;
+    if (!['run_tests', 'run_command'].includes(tool || '')) return;
+  }
   if (['read_file', 'git_diff', 'search_files'].includes(tool || '')) evidence.inspected = true;
   if (!['run_tests', 'run_command'].includes(tool || '')) return;
   // Only the runner header is evidence. A string printed by the command body
@@ -40,6 +44,7 @@ export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map
   const output = typeof result.output === 'string' ? result.output : '';
   const exit = output.match(/^(?:command=[^\r\n]*\r?\n)?exit=(\d+)(?:\r?\n|$)/);
   if (!exit) return;
+  if (result.ok !== true && exit[1] === '0') return;
   (evidence.checks ||= []).push({ command: output.match(/^command=([^\r\n]+)/)?.[1] || evidence.commands?.[item.tool_call_id || ''] || '', exitCode: Number(exit[1]), excerpt: output.slice(0, 3000) });
   if (exit[1] === '0') evidence.successfulChecks++; else evidence.failedChecks++;
 }

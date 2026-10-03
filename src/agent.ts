@@ -99,6 +99,7 @@ export class Agent {
     const maxIterations = config.maxAgentIterations && config.maxAgentIterations > 0 ? config.maxAgentIterations : Infinity;
     const maxTools = config.maxAgentToolCalls && config.maxAgentToolCalls > 0 ? config.maxAgentToolCalls : Infinity;
     let previousRead = '', repeatedReads = 0;
+    const repeatedFailures = new Map<string, number>();
     for (let iteration = 0, toolCount = 0; iteration < maxIterations; iteration++) {
       signal?.throwIfAborted();
       const decision = this.router.route({ role: this.role, agentId: assigned?.id, taskType: 'coding', complexity: 5, contextTokens: context.stats(system, definitions).estimatedInput, requiresTools: true, requiresLongContext: false, preferQuality: ['reviewer', 'planner'].includes(this.role) }, config);
@@ -187,6 +188,7 @@ export class Agent {
       }
       const exchange: Message[] = [answer];
       memoryOptions.journal?.beginBatch(answer, state);
+      let stalledFailure = '';
       for (const call of result.toolCalls) {
         signal?.throwIfAborted();
         if (++toolCount > maxTools) throw new Error(`Agent đã dùng ${maxTools} lượt công cụ. Context được giữ; tăng ngân sách trong Thiết lập agent nếu nhiệm vụ cần thêm.`);
@@ -221,9 +223,18 @@ export class Agent {
         memoryOptions.onItem?.(item);
         exchange.push({ ...item, content: context.toolContent(item.content!) });
         this.log?.emit('tool_end', { agentId: this.id, tool: call.function.name, ok: value.ok });
+        if (!value.ok) {
+          let argumentsValue: unknown; try { argumentsValue = JSON.parse(call.function.arguments); } catch { argumentsValue = call.function.arguments; }
+          const signature = JSON.stringify([call.function.name, argumentsValue, value.error]);
+          const count = (repeatedFailures.get(signature) || 0) + 1;
+          repeatedFailures.set(signature, count);
+          if (repeatedFailures.size > 64) repeatedFailures.delete(repeatedFailures.keys().next().value!);
+          if (count >= 4) stalledFailure = `Agent không tiến triển: ${call.function.name} lặp cùng thao tác lỗi ${count} lần. Kết quả và checkpoint đã lưu; sửa nguyên nhân trước khi thử lại.`;
+        } else if (!nonmutating && !mcpSession.isReadOnly(call.function.name)) repeatedFailures.clear();
       }
       state.messages.push(...exchange);
       memoryOptions.journal?.finishBatch(state);
+      if (stalledFailure) { context.publish(system, definitions); throw new Error(stalledFailure); }
       const readOnlyRound = result.toolCalls.every(call => ['read_file', 'search_files', 'list_files', 'git_status', 'git_diff', 'read_skill_resource', 'recall_context'].includes(call.function.name));
       const fingerprint = readOnlyRound ? createHash('sha256').update(JSON.stringify({ calls: result.toolCalls.map(call => call.function), results: exchange.slice(1).map(item => item.content) })).digest('hex') : '';
       repeatedReads = fingerprint && fingerprint === previousRead ? repeatedReads + 1 : 1;

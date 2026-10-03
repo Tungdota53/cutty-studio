@@ -3,6 +3,14 @@ import { executionDiagnosis, qualityGate, recordEvidence, type TaskEvidence } fr
 import { parseTeamPlan } from '../src/teamwork.js';
 
 describe('Independent teamwork evidence', () => {
+  it('keeps failed command evidence when the runner reports ok=false', () => {
+    const evidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
+    const calls = new Map([['check', 'run_command']]);
+    recordEvidence(evidence, { role: 'tool', tool_call_id: 'check', content: JSON.stringify({ ok: false, output: 'exit=7\nfailed' }) }, calls);
+    expect(evidence.failedChecks).toBe(1); expect(evidence.successfulChecks).toBe(0);
+    recordEvidence(evidence, { role: 'tool', tool_call_id: 'check', content: JSON.stringify({ ok: false, output: 'exit=0\nuntrusted completion' }) }, calls);
+    expect(evidence.successfulChecks).toBe(0);
+  });
   it('does not equate completed claims with verified implementation', () => {
     const tasks = parseTeamPlan(JSON.stringify({ tasks: [{ id: 'code', role: 'coder', title: 'Code' }, { id: 'test', role: 'tester', title: 'Test', dependencies: ['code'] }, { id: 'review', role: 'reviewer', title: 'Review', dependencies: ['test'] }] }));
     for (const task of tasks) task.status = 'completed';

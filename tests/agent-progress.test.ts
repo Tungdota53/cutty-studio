@@ -20,6 +20,12 @@ function setup(reply:(messages:Message[])=>any) {
 }
 const read=(name:string)=>({content:'',toolCalls:[{id:'read-'+name,type:'function',function:{name:'read_file',arguments:JSON.stringify({path:name})}}]});
 describe('Agent progress budgets',()=>{
+  it('stops a repeated failing action even when interleaved with successful reads',async()=>{
+    let turns=0; const {root,agent,state}=setup(()=> turns++ % 2 ? read('input.txt') : {content:'',toolCalls:[{id:'bad-'+turns,type:'function',function:{name:'missing_tool',arguments:'{}'}}]});
+    fs.writeFileSync(path.join(root,'input.txt'),'same');
+    await expect(agent.run('Implement',undefined,undefined,[],{state})).rejects.toThrow('lặp cùng thao tác lỗi 4 lần');
+    expect(state.messages.filter(item=>item.role==='tool'&&item.content?.includes('không tồn tại'))).toHaveLength(4);
+  });
   it('finishes useful work exceeding the old twenty-round limit',async()=>{
     let turns=0;const {root,agent}=setup(()=>turns<24?read(`f${turns++}.txt`):{content:'finished',toolCalls:[]});
     for(let i=0;i<24;i++)fs.writeFileSync(path.join(root,`f${i}.txt`),String(i));

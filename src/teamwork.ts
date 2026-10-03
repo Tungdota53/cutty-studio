@@ -345,9 +345,9 @@ export class Teamwork {
             writeAgentArtifact(sessionRoot, aid, 'BRIEFING.md', `# Briefing\n\n${goal}\n\n${roleCatalog[t.role].responsibility}\n${assigned?.instructions || ''}\n`);
             writeAgentArtifact(sessionRoot, aid, 'DISPATCH.md', dispatch);
             writeAgentArtifact(sessionRoot, aid, 'progress.md', 'RUNNING\n');
-            let step = 'Starting agent';
-            const progress = () => writeAgentArtifact(sessionRoot, aid, 'progress.md', `# Progress\n\nStatus: RUNNING\nPhase: ${taskPhase(t)}\nTask: ${t.id}\nAttempt: ${t.retries || 0}\nLast heartbeat: ${new Date().toISOString()}\nCurrent step: ${step}\n`);
-            heartbeat = setInterval(() => { try { progress(); if (Date.now() - lastSnapshot >= 1000) snapshot(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
+            let step = 'Starting agent'; t.lastProgressAt = new Date().toISOString(); t.step = step; let stallReported = false;
+            const progress = () => writeAgentArtifact(sessionRoot, aid, 'progress.md', `# Progress\n\nStatus: RUNNING\nPhase: ${taskPhase(t)}\nTask: ${t.id}\nAttempt: ${t.retries || 0}\nLast heartbeat: ${new Date().toISOString()}\nLast actual progress: ${t.lastProgressAt}\nProgress idle seconds: ${Math.floor((Date.now() - Date.parse(t.lastProgressAt!)) / 1000)}\nCurrent step: ${step}\n`);
+            heartbeat = setInterval(() => { try { const idleMs = Date.now() - Date.parse(t.lastProgressAt!); t.stalled = idleMs >= 90000; if (t.stalled && !stallReported) { stallReported = true; emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', stalled: true, lastProgressAt: t.lastProgressAt, step, message: `Chưa có tiến độ ${Math.floor(idleMs / 1000)} giây · ${step}. Đang chờ kết quả; heartbeat không phải tiến độ.`, timestamp: new Date().toISOString() }); } progress(); if (Date.now() - lastSnapshot >= 1000) snapshot(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
             const taskEvidence: TaskEvidence = resumed && evidence.get(t.id) ? evidence.get(t.id)! : { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
             if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t))) taskEvidence.files = dependencyFingerprints(t, this.tasks, scope);
             evidence.set(t.id, taskEvidence);
@@ -366,7 +366,7 @@ export class Teamwork {
               skills: t.skills,
               namedAgentId: assigned?.id,
               agentConfig: this.c,
-              onModel: model => { selectedModel = model; t.model = model; this.agents.set(aid, { role: t.role, status: 'running', model }); this.db.agent(id, { id: aid, role: t.role, status: 'running', model, currentTaskId: t.id }); this.db.task(id, t); emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', model }); },
+              onModel: model => { step = 'model_request'; t.step = step; selectedModel = model; t.model = model; this.agents.set(aid, { role: t.role, status: 'running', model }); this.db.agent(id, { id: aid, role: t.role, status: 'running', model, currentTaskId: t.id }); this.db.task(id, t); emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', model }); },
               skillWorkspace: this.c.workspace,
               onSkills: skills => {
                 t.loadedSkills = skills.map(skill => skill.id);
@@ -383,8 +383,8 @@ export class Teamwork {
                 if (t.role === 'coder' && item.role === 'tool') fingerprints[t.id] = dependencyFingerprints(t, this.tasks, scope);
                 if (item.role === 'tool') pipeline.tool();
                 if (Date.now() - lastSnapshot >= 1000) snapshot();
-                step = item.tool_calls?.map(call => call.function.name).join(', ') || (item.role === 'tool' ? `Finished ${calls.get(item.tool_call_id || '') || 'tool'}` : item.role);
-                emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', step, timestamp: new Date().toISOString() });
+                t.lastProgressAt = new Date().toISOString(); t.stalled = false; stallReported = false; step = item.tool_calls?.map(call => call.function.name).join(', ') || (item.role === 'tool' ? `Finished ${calls.get(item.tool_call_id || '') || 'tool'}` : item.role);
+                t.step = step; emit({ type: 'agent_status', agentId: aid, taskId: t.id, status: 'running', step, stalled: false, lastProgressAt: t.lastProgressAt, timestamp: new Date().toISOString() });
                 progress();
               }
             });

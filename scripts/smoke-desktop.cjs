@@ -163,6 +163,11 @@ app.on('browser-window-created', (_, win) => {
       assert(await win.webContents.executeJavaScript(`Math.abs(document.querySelector('.agent-node').getBoundingClientRect().width - 254 * parseInt(document.getElementById('map-zoom-value').textContent) / 100) < 3`));
       assert.equal(await win.webContents.executeJavaScript(`getComputedStyle(document.querySelector('.agent-node')).animationName`), 'none');
       fs.writeFileSync('release/preview-map.png', (await win.webContents.capturePage()).toPNG());
+      await win.webContents.executeJavaScript(`TeamMap.restore({sessionId:'stalled-fixture',status:'running',tasks:[{id:'stall',title:'Browser check',role:'coder',status:'running',dependencies:[],lastProgressAt:new Date(Date.now()-120000).toISOString(),step:'run_command'}]});TeamMap.event({type:'agent_status',taskId:'stall',step:'budget'});`);
+      await wait(win, `document.querySelector('[data-task=stall]')`);
+      await win.webContents.executeJavaScript(`document.querySelector('[data-task=stall]').click();`);
+      await wait(win, `document.getElementById('map-detail-content').textContent.includes('chưa có tiến độ mới')`);
+      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('Chạy lệnh') && document.getElementById('map-detail-content').textContent.includes('Tiến độ gần nhất') && !document.getElementById('map-detail-content').textContent.includes('budget')`));
       await win.webContents.executeJavaScript(`location.reload();`);
       await wait(win, `document.getElementById('connection-text').textContent==='Đã kết nối' && document.querySelectorAll('.agent-node.completed').length===5 && document.getElementById('map-gate').textContent==='PASS'`);
       await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);

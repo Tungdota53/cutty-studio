@@ -6,7 +6,7 @@ window.TeamMap = (() => {
   const phaseLabels = ['Khảo sát','Đặc tả','Viết test','Triển khai','Kiểm thử','Review','Phản biện','Audit','Nghiệm thu'];
   const statusLabels = { pending:'Chờ phân công', ready:'Sẵn sàng', running:'Đang chạy', completed:'Hoàn tất', failed:'Lỗi', blocked:'Bị chặn', cancelled:'Đã dừng', interrupted:'Dở dang' };
   const roleIcons = { planner:'⌘',coder:'⌨',tester:'◎',reviewer:'◇',judge:'✦',general:'◌' };
-  const stepLabels = { user:'Nhận nhiệm vụ',assistant:'Tổng hợp kết quả',read_file:'Đọc tệp',write_file:'Ghi tệp',edit_file:'Sửa tệp',search_files:'Tìm trong dự án',run_command:'Chạy lệnh',run_tests:'Chạy kiểm thử',git_diff:'Đọc thay đổi',load_skill:'Nạp skill',read_skill_resource:'Đọc tài nguyên skill' };
+  const stepLabels = { model_request:'Đang chờ model', user:'Nhận nhiệm vụ',assistant:'Tổng hợp kết quả',read_file:'Đọc tệp',write_file:'Ghi tệp',edit_file:'Sửa tệp',search_files:'Tìm trong dự án',run_command:'Chạy lệnh',run_tests:'Chạy kiểm thử',git_diff:'Đọc thay đổi',load_skill:'Nạp skill',read_skill_resource:'Đọc tài nguyên skill' };
   const stepText = value => value?.startsWith('Finished ') ? 'Xong · ' + (stepLabels[value.slice(9)] || value.slice(9)) : stepLabels[value] || value;
   const fallbackPhase = { planner:'survey',coder:'implementation',tester:'verification',reviewer:'review',judge:'acceptance',general:'survey' };
   let tasks = [], roster = [], live = new Map(), selected = null, zoom = 1, width = 800, height = 400, diagram = 'agents', maxAgents = 4, roleModels = {}, defaultModel = '';
@@ -14,7 +14,7 @@ window.TeamMap = (() => {
   const node = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; };
   const svgNode = (tag, attributes) => { const el = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [key,value] of Object.entries(attributes)) el.setAttribute(key, String(value)); return el; };
   const phaseOf = task => task.phase || fallbackPhase[task.role] || 'survey';
-  const activeTask = task => ({ ...task, ...(live.get(task.id) || {}) });
+  const activeTask = task => { const state = { ...task, ...(live.get(task.id) || {}) }; if (state.status === 'running' && state.lastProgressAt) { const idle = Math.max(0,Math.floor((Date.now() - Date.parse(state.lastProgressAt)) / 1000)); if (idle >= 90) state.step = `Chờ ${idle}s · ${stepText(state.step) || 'kết quả'} · chưa có tiến độ mới`; } return state; };
   const agentFor = task => roster.find(agent => agent.id === (task.configuredAgentId || task.agentId));
   const titleFor = task => task.agentName || agentFor(task)?.name || task.role || 'Agent';
   const modelFor = task => task.model || agentFor(task)?.model || roleModels[task.role] || defaultModel || 'Theo cấu hình';
@@ -150,7 +150,7 @@ window.TeamMap = (() => {
     const state = activeTask(task), agent = agentFor(state), target = get('map-detail-content'); target.replaceChildren();
     target.append(node('p','eyebrow','AGENT / ' + task.id),node('h2','detail-agent-name',titleFor(state)),node('span','detail-status ' + state.status,statusLabels[state.status] || state.status),node('h3','detail-task-title',task.title || task.id));
     const facts = node('dl','detail-facts');
-    for (const [key,value] of [['Vai trò',task.role],['AI / Model',modelFor(state)],['Agent ID',task.assignedAgentId || 'Chưa tạo'],['Pha',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)],['Lần thử',String((task.retries || 0) + 1)],['Trạng thái',state.waitReason || stepText(state.step) || state.message || 'Chưa có cập nhật']]) { facts.append(node('dt','',key),node('dd','',value)); }
+    for (const [key,value] of [['Vai trò',task.role],['AI / Model',modelFor(state)],['Agent ID',task.assignedAgentId || 'Chưa tạo'],['Pha',phaseLabels[phases.indexOf(phaseOf(task))] || phaseOf(task)],['Tiến độ gần nhất',state.lastProgressAt ? new Date(state.lastProgressAt).toLocaleTimeString('vi-VN') : 'Chưa có'],['Lần thử',String((task.retries || 0) + 1)],['Trạng thái',state.waitReason || stepText(state.step) || state.message || 'Chưa có cập nhật']]) { facts.append(node('dt','',key),node('dd','',value)); }
     target.append(facts);
     for (const [label,values] of [['Skill',state.skills || task.loadedSkills || []],['Phụ thuộc',task.dependencies || []],['Tệp được giao',task.expectedFiles || []]]) { target.append(node('h4','',label)); const chips = node('div','detail-chips'); for (const value of values) chips.append(node('span','',value)); if (!values.length) chips.append(node('small','muted','Chưa có')); target.append(chips); }
     const evidence = pipeline?.tasks?.find(item => item.id === task.id)?.evidence;
@@ -159,7 +159,7 @@ window.TeamMap = (() => {
     if (task.error || task.resultSummary) { const details = node('details','detail-result'); details.append(node('summary','',task.error ? 'Chi tiết lỗi' : 'Kết quả tác vụ'),node('pre','',task.error || task.resultSummary)); target.append(details); }
   }
   function feed(event) {
-    if (!event.message && !event.step) return;
+    if ((!event.message && !event.step) || event.step === 'budget') return;
     const target = get('map-feed'); if (!target.querySelector('.map-feed-entry')) target.replaceChildren();
     const row = node('div','map-feed-entry'); const stamp = new Date(event.timestamp || Date.now());
     row.append(node('time','',stamp.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})),node('p','',event.message || `${event.taskId || 'Agent'} · ${stepText(event.step)}`)); target.prepend(row);
@@ -173,7 +173,7 @@ window.TeamMap = (() => {
     if (event.taskId && event.type !== 'task_snapshot') {
       const task = tasks.find(task => task.id === event.taskId);
       // A failed old attempt must not overwrite a task already reset for repair.
-      if (!(task?.status === 'pending' && event.type === 'task_failed')) live.set(event.taskId,{...live.get(event.taskId),...event});
+      if (!(task?.status === 'pending' && event.type === 'task_failed')) live.set(event.taskId,{...live.get(event.taskId),...event,...(event.step === 'budget' ? {step:live.get(event.taskId)?.step || task?.step} : {})});
       if (!selected && event.type === 'task_start') selected = event.taskId;
     }
     if (event.type === 'session_end') { running = false; gate = event.gate; pipeline = event.pipeline || pipeline; }

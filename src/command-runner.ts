@@ -1,0 +1,40 @@
+import { execa, execaCommand } from 'execa';
+
+/** Own the deadline and terminate descendants before the shell loses their PIDs.
+ * A shell timeout alone can leave Node/Chromium holding stdout open on Windows.
+ */
+export async function runCommand(command: string, cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<{ exitCode?: number; stdout: string; stderr: string }> {
+  signal?.throwIfAborted();
+  const child = execaCommand(command, { cwd, shell: true, windowsHide: true, reject: false,
+    detached: process.platform !== 'win32', maxBuffer: 2 * 1024 * 1024 });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<never> | undefined;
+  let rejectDeadline: (error: Error) => void = () => {};
+  const deadline = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+  const stop = (reason: string) => {
+    if (stopping) return;
+    stopping = (async () => {
+      if (child.pid && child.exitCode === null) {
+        if (process.platform === 'win32') {
+          // Literal PID, no shell interpolation; touch only this owned process tree.
+          await execa('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+            windowsHide: true, reject: false, timeout: 3000, forceKillAfterDelay: 1000
+          }).catch(() => {});
+        } else { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+        child.kill('SIGKILL');
+      }
+      throw new Error(reason);
+    })();
+    stopping.catch(rejectDeadline);
+  };
+  const abort = () => stop('Command cancelled; owned process tree terminated. Inspect partial effects before retrying.');
+  timer = setTimeout(() => stop(`Command timed out after ${timeoutMs} ms; owned process tree terminated. Inspect partial effects before retrying. Close browser/server handles in finally blocks.`), timeoutMs);
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  try {
+    const result = await Promise.race([child, deadline]);
+    if (stopping) return await stopping;
+    signal?.throwIfAborted();
+    return result;
+  } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+}
