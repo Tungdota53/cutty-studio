@@ -16,7 +16,7 @@ import { newConversation } from './conversation.js';
 import { z } from 'zod';
 import { roleSchema, roleCatalog, assignedAgent, canUseTool } from './roles.js';
 import { SkillLibrary } from './skills.js';
-import { dependencyFingerprints, qualityGate, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
+import { dependencyFingerprints, qualityGate, verificationEvidence, recordEvidence, reviewVerdict, staleEvidence, structuredHandoff, writeAgentArtifact, type TaskEvidence } from './team-artifacts.js';
 import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
 import { scheduleRepairs } from './team-repair.js';
 import { Pipeline } from './pipeline.js';
@@ -379,7 +379,7 @@ export class Teamwork {
                 writeAgentArtifact(sessionRoot, aid, 'BRIEFING.md', `# Persistent briefing\n\nGoal: ${goal}\nTask: ${t.id}\nPhase: ${taskPhase(t)}\nRole: ${t.role}\nModel: ${selectedModel}\nWorkspace: ${scope}\nOwned files: ${(t.expectedFiles || []).join(', ')}\nConversation checkpoint: ${memoryKey}\nUsage: ${JSON.stringify(memory.usage)}\nCompactions: ${memory.compactions}\n\nCurrent factual context (unverified until checked):\n${memory.summary || 'See archived conversation and DISPATCH.md.'}\n`);
               },
               onItem: item => {
-                this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls);
+                this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls, t.verificationCommands);
                 if (t.role === 'coder' && item.role === 'tool') fingerprints[t.id] = dependencyFingerprints(t, this.tasks, scope);
                 if (item.role === 'tool') pipeline.tool();
                 if (Date.now() - lastSnapshot >= 1000) snapshot();
@@ -393,7 +393,8 @@ export class Teamwork {
               fingerprints[t.id] = dependencyFingerprints(t, this.tasks, scope);
               if (t.id.startsWith('repair-')) for (const dependency of t.dependencies) { const original = this.tasks.find(task => task.id === dependency); if (original?.role === 'coder') fingerprints[original.id] = dependencyFingerprints(original, this.tasks, scope); }
             }
-            if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && (taskEvidence.failedChecks > 0 || reviewVerdict(t) === 'FAIL')) throw new Error(`Validation veto ${t.id}: ${t.resultSummary || 'executed check failed'}`);
+            const validation = verificationEvidence(t, taskEvidence);
+            if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && (validation.failedChecks > 0 || reviewVerdict(t) === 'FAIL')) throw new Error(`Validation veto ${t.id}: ${validation.failures.join('; ') || 'Validator reported FAIL'}\nAgent report: ${(t.resultSummary || '').slice(0, 1200)}`);
             t.status = 'completed';
             t.completedAt = new Date().toISOString();
 
@@ -423,7 +424,7 @@ export class Teamwork {
             const failedProof = evidence.get(t.id);
             attemptReport = structuredHandoff(t, failedProof);
             writeAgentArtifact(sessionRoot, aid, 'handoff.json', JSON.stringify(attemptReport, null, 2));
-            if (!isAborted && ((failedProof?.failedChecks || 0) > 0 || reviewVerdict(t) === 'FAIL')) pendingRepairs.push({ task: t, reason: String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []) });
+            if (!isAborted && (verificationEvidence(t, failedProof).failedChecks > 0 || reviewVerdict(t) === 'FAIL')) pendingRepairs.push({ task: t, reason: String(e) + '\nExecuted checks: ' + JSON.stringify(failedProof?.checks || []) });
 
             this.agents.set(aid, {
               role: t.role,
@@ -503,7 +504,7 @@ export class Teamwork {
     snapshot(status);
     for (const proof of evidence.values()) proof.stale = staleEvidence(proof);
     const gate = qualityGate(this.tasks, evidence);
-    const rows = this.tasks.map(task => `| ${task.id} | ${taskPhase(task)} | ${task.status} | ${reviewVerdict(task)} | ${evidence.get(task.id)?.successfulChecks || 0} | ${evidence.get(task.id)?.stale ? 'STALE' : 'current'} |`).join('\n');
+    const rows = this.tasks.map(task => `| ${task.id} | ${taskPhase(task)} | ${task.status} | ${reviewVerdict(task)} | ${verificationEvidence(task, evidence.get(task.id)).successfulChecks} | ${evidence.get(task.id)?.stale ? 'STALE' : 'current'} |`).join('\n');
     fs.writeFileSync(path.join(sessionRoot, 'GATE_STATUS.md'), `# Acceptance: ${gate.verdict}\n\n${gate.reasons.map(reason => '- ' + reason).join('\n')}\n\n| Task | Phase | Execution | Report verdict | Successful checks | Source evidence |\n|---|---|---|---|---|---|\n${rows}\n\nRepair rounds: ${repairRounds}/2\nTask completion alone does not establish correctness. Successful commands are recorded execution evidence; their assertions still require review.\n`);
     fs.writeFileSync(path.join(sessionRoot, 'gate.json'), JSON.stringify({ ...gate, repairRounds, tasks: this.tasks.map(task => ({ id: task.id, phase: taskPhase(task), status: task.status, evidence: evidence.get(task.id) || null })) }, null, 2));
     const requirements = this.tasks.flatMap(task => (task.acceptanceCriteria || []).map(criterion => ({ taskId: task.id, criterion, requiredCommands: task.verificationCommands || [], checks: evidence.get(task.id)?.checks || [], stale: evidence.get(task.id)?.stale || false })));

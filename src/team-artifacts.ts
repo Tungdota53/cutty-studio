@@ -5,7 +5,36 @@ import { safePath } from './security.js';
 import type { Message, Task } from './types.js';
 import { taskPhase } from './team-protocol.js';
 
-export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number; commands?: Record<string, string>; checks?: { command: string; exitCode: number; excerpt: string }[]; files?: Record<string, string | null>; stale?: boolean }
+export interface TaskEvidence { inspected: boolean; successfulChecks: number; failedChecks: number; toolErrors: number; commands?: Record<string, string>; checks?: { command: string; exitCode: number; excerpt: string; kind?: 'probe' | 'verification' }[]; executionErrors?: { command: string; error: string }[]; files?: Record<string, string | null>; stale?: boolean }
+/** Only exact, standalone runtime version probes are advisory. Compound commands,
+ * test runners and explicitly required probes remain acceptance evidence. */
+export function isEnvironmentProbe(command: string, required: readonly string[] = []) {
+  const normalized = command.trim().replace(/\s+/g, ' ');
+  return !required.some(item => item.trim().replace(/\s+/g, ' ') === normalized) && /^(?:python(?:3)?|py|node|npm|npx|git|ruby|go|cargo|rustc|java)(?:\.exe)? (?:--version|-V)$/i.test(normalized);
+}
+export function verificationEvidence(task: Pick<Task, 'verificationCommands'>, proof?: TaskEvidence) {
+  if (!proof) return { successfulChecks: 0, failedChecks: 0, warnings: 0, failures: [] as string[] };
+  if (!proof.checks && !proof.executionErrors) return { successfulChecks: proof.successfulChecks, failedChecks: proof.failedChecks, warnings: 0, failures: [] as string[] };
+  const checks = (proof.checks || []).filter(check => !isEnvironmentProbe(check.command, task.verificationCommands));
+  const errors = (proof.executionErrors || []).filter(error => !isEnvironmentProbe(error.command, task.verificationCommands));
+  return { successfulChecks: checks.filter(check => check.exitCode === 0).length,
+    failedChecks: checks.filter(check => check.exitCode !== 0).length + errors.length,
+    warnings: (proof.checks || []).filter(check => check.exitCode !== 0 && isEnvironmentProbe(check.command, task.verificationCommands)).length + (proof.executionErrors || []).filter(error => isEnvironmentProbe(error.command, task.verificationCommands)).length,
+    failures: [...checks.filter(check => check.exitCode !== 0).map(check => `${check.command.slice(0, 200)} · exit=${check.exitCode}`), ...errors.map(error => `${error.command.slice(0, 200)} · ${error.error.slice(0, 300)}`)] };
+}
+/** Development experiments remain in the log. A coder is accepted only through
+ * its required commands and fresh dependent testing/review of the final source. */
+export function gateEvidence(task: Pick<Task, 'role' | 'verificationCommands'>, proof?: TaskEvidence) {
+  const summary = verificationEvidence(task, proof);
+  if (task.role !== 'coder' || !proof?.checks) return summary;
+  const required = task.verificationCommands || [];
+  const failures = required.flatMap(command => {
+    const last = proof.checks!.filter(check => check.command.trim() === command.trim()).at(-1);
+    const errors = (proof.executionErrors || []).filter(error => error.command.trim() === command.trim());
+    return [...(last && last.exitCode !== 0 ? [`${command.slice(0,200)} · exit=${last.exitCode}`] : []), ...errors.map(error => `${command.slice(0,200)} · ${error.error.slice(0,300)}`)];
+  });
+  return { ...summary, failedChecks: failures.length, failures };
+}
 export function dependencyFingerprints(task: Task, tasks: Task[], scope: string) {
   const seen = new Set<string>(), files: Record<string, string | null> = {};
   const visit = (task: Task) => {
@@ -23,13 +52,13 @@ export function staleEvidence(proof: TaskEvidence) {
     try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== expected; } catch { return expected !== null; }
   });
 }
-export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map<string, string>) {
+export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map<string, string>, required: readonly string[] = []) {
   for (const call of item.tool_calls || []) {
     calls.set(call.id, call.function.name);
     try { const command = JSON.parse(call.function.arguments)?.command; (evidence.commands ||= {})[call.id] = typeof command === 'string' ? command : ''; } catch { /* Invalid arguments cannot execute. */ }
   }
   if (item.role !== 'tool') return;
-  let result: { ok?: boolean; output?: string };
+  let result: { ok?: boolean; output?: string; error?: string };
   try { result = JSON.parse(item.content || '{}'); } catch { evidence.toolErrors++; return; }
   if (!result || typeof result !== 'object') { evidence.toolErrors++; return; }
   const tool = calls.get(item.tool_call_id || '');
@@ -43,10 +72,19 @@ export function recordEvidence(evidence: TaskEvidence, item: Message, calls: Map
   // (for example after an undefined exit code) cannot manufacture a passing run.
   const output = typeof result.output === 'string' ? result.output : '';
   const exit = output.match(/^(?:command=[^\r\n]*\r?\n)?exit=(\d+)(?:\r?\n|$)/);
-  if (!exit) return;
+  if (!exit) {
+    if (result.ok === false) {
+      const command = evidence.commands?.[item.tool_call_id || ''] || (tool === 'run_tests' ? 'run_tests' : '');
+      (evidence.executionErrors ||= []).push({ command, error: typeof result.error === 'string' ? result.error : 'Command did not produce a completed execution result' });
+      if (!isEnvironmentProbe(command, required)) evidence.failedChecks++;
+    }
+    return;
+  }
   if (result.ok !== true && exit[1] === '0') return;
-  (evidence.checks ||= []).push({ command: output.match(/^command=([^\r\n]+)/)?.[1] || evidence.commands?.[item.tool_call_id || ''] || '', exitCode: Number(exit[1]), excerpt: output.slice(0, 3000) });
-  if (exit[1] === '0') evidence.successfulChecks++; else evidence.failedChecks++;
+  const command = output.match(/^command=([^\r\n]+)/)?.[1] || evidence.commands?.[item.tool_call_id || ''] || '';
+  const kind = isEnvironmentProbe(command, required) ? 'probe' : 'verification';
+  (evidence.checks ||= []).push({ command, exitCode: Number(exit[1]), excerpt: output.slice(0, 3000), kind });
+  if (kind === 'verification') { if (exit[1] === '0') evidence.successfulChecks++; else evidence.failedChecks++; }
 }
 
 /** Separate execution failures from validators that never had a chance to run. */
@@ -95,27 +133,27 @@ export function qualityGate(tasks: Task[], evidence: Map<string, TaskEvidence>) 
     if (coder.status !== 'completed') continue;
     const testers = tasks.filter(t => t.role === 'tester' && dependsOn(t, coder.id));
     const reviews = tasks.filter(t => t.role === 'reviewer' && dependsOn(t, coder.id));
-    if (!testers.some(t => t.status === 'completed' && !evidence.get(t.id)?.stale && (evidence.get(t.id)?.successfulChecks || 0) > 0) && !testers.some(t => ['failed', 'blocked', 'cancelled'].includes(t.status))) reasons.push(`${coder.id}: chưa có kiểm tra thực thi thành công từ tester phụ thuộc.`);
+    if (!testers.some(t => t.status === 'completed' && !evidence.get(t.id)?.stale && verificationEvidence(t, evidence.get(t.id)).successfulChecks > 0) && !testers.some(t => ['failed', 'blocked', 'cancelled'].includes(t.status))) reasons.push(`${coder.id}: chưa có kiểm tra thực thi thành công từ tester phụ thuộc.`);
     if ((!reviews.length || !reviews.every(t => t.status === 'completed' && !evidence.get(t.id)?.stale && evidence.get(t.id)?.inspected && reviewVerdict(t) === 'PASS')) && !reviews.some(t => ['failed', 'blocked', 'cancelled'].includes(t.status))) reasons.push(`${coder.id}: cần tất cả reviewer phụ thuộc đọc mã và trả PASS không có finding.`);
   }
   for (const task of tasks.filter(t => ['challenge', 'audit', 'acceptance'].includes(taskPhase(t)))) {
     if (task.status !== 'completed') continue;
     const proof = evidence.get(task.id);
-    if (proof?.stale || reviewVerdict(task) !== 'PASS' || !proof?.inspected || (task.role !== 'judge' && !proof.successfulChecks)) reasons.push(`${task.id}: chưa có kết luận PASS độc lập và bằng chứng cho phase ${taskPhase(task)}.`);
+    if (proof?.stale || reviewVerdict(task) !== 'PASS' || !proof?.inspected || (task.role !== 'judge' && !verificationEvidence(task, proof).successfulChecks)) reasons.push(`${task.id}: chưa có kết luận PASS độc lập và bằng chứng cho phase ${taskPhase(task)}.`);
     if (['audit', 'acceptance'].includes(taskPhase(task)) && implementation.some(coder => !dependsOn(task, coder.id))) reasons.push(`${task.id}: audit/nghiệm thu chưa phụ thuộc vào toàn bộ phần triển khai.`);
     if (taskPhase(task) === 'acceptance' && tasks.some(audit => taskPhase(audit) === 'audit' && !dependsOn(task, audit.id))) reasons.push(`${task.id}: nghiệm thu chưa phụ thuộc vào toàn bộ audit.`);
   }
   for (const task of tasks) {
     if (task.status !== 'completed') continue;
-    if ((evidence.get(task.id)?.failedChecks || 0) > 0) reasons.push(`${task.id}: có kiểm tra thực thi thất bại trong lượt hiện tại.`);
+    if (gateEvidence(task, evidence.get(task.id)).failedChecks > 0) reasons.push(`${task.id}: có kiểm tra bắt buộc/thẩm định thất bại: ${gateEvidence(task, evidence.get(task.id)).failures.join('; ') || 'xem bằng chứng thực thi'}.`);
     if (evidence.get(task.id)?.stale) reasons.push(`${task.id}: bằng chứng mất hiệu lực vì mã nguồn đã thay đổi sau kiểm tra.`);
-    if (taskPhase(task) === 'verification' && !evidence.get(task.id)?.successfulChecks) reasons.push(`${task.id}: thiếu kiểm tra được thực thi thành công.`);
+    if (taskPhase(task) === 'verification' && !verificationEvidence(task, evidence.get(task.id)).successfulChecks) reasons.push(`${task.id}: thiếu kiểm tra được thực thi thành công.`);
     if (task.role === 'reviewer' && (!evidence.get(task.id)?.inspected || reviewVerdict(task) !== 'PASS')) reasons.push(`${task.id}: thiếu review PASS với inspection độc lập.`);
     for (const command of task.verificationCommands || []) {
       if (!evidence.get(task.id)?.checks?.some(check => check.exitCode === 0 && check.command.trim() === command.trim())) reasons.push(`${task.id}: chưa chạy thành công lệnh yêu cầu ${command}`);
     }
   }
-  const failed = tasks.some(t => t.status !== 'completed' || (evidence.get(t.id)?.failedChecks || 0) > 0 || (['review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && reviewVerdict(t) === 'FAIL'));
+  const failed = tasks.some(t => t.status !== 'completed' || gateEvidence(t, evidence.get(t.id)).failedChecks > 0 || (['review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && reviewVerdict(t) === 'FAIL'));
   return { verdict: failed ? 'FAIL' : reasons.length ? 'UNVERIFIED' : 'PASS', reasons, diagnosis };
 }
 

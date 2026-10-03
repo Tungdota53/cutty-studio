@@ -1,8 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import { executionDiagnosis, qualityGate, recordEvidence, type TaskEvidence } from '../src/team-artifacts.js';
+import { executionDiagnosis, qualityGate, recordEvidence, verificationEvidence, gateEvidence, isEnvironmentProbe, type TaskEvidence } from '../src/team-artifacts.js';
 import { parseTeamPlan } from '../src/teamwork.js';
 
 describe('Independent teamwork evidence', () => {
+  it('keeps coder experiments but requires independent execution and blocks the latest failed required command', () => {
+    const tasks=parseTeamPlan(JSON.stringify({tasks:[{id:'code',title:'Code',role:'coder',verificationCommands:['npm test']},{id:'test',title:'Test',role:'tester',dependencies:['code']},{id:'review',title:'Review',role:'reviewer',dependencies:['test']}]}));tasks.forEach(task=>task.status='completed');tasks[2].resultSummary='{"verdict":"PASS","findings":[]}';
+    const proof:TaskEvidence={inspected:true,successfulChecks:1,failedChecks:2,toolErrors:0,checks:[{command:'npm test',exitCode:1,excerpt:'before fix'},{command:'node diagnostic.cjs',exitCode:1,excerpt:'experiment'},{command:'npm test',exitCode:0,excerpt:'after fix'}]};
+    const evidence=new Map<string,TaskEvidence>([['code',proof],['test',{inspected:true,successfulChecks:1,failedChecks:0,toolErrors:0}],['review',{inspected:true,successfulChecks:0,failedChecks:0,toolErrors:0}]]);
+    expect(qualityGate(tasks,evidence).verdict).toBe('PASS');expect(proof.failedChecks).toBe(2);
+    evidence.delete('test');expect(qualityGate(tasks,evidence).verdict).toBe('UNVERIFIED');
+    proof.checks!.push({command:'npm test',exitCode:1,excerpt:'latest failure'});expect(gateEvidence(tasks[0],proof).failedChecks).toBe(1);expect(qualityGate(tasks,evidence).verdict).toBe('FAIL');
+  });
+  it('does not veto successful required suites because optional Python version detection fails, including old checkpoints', () => {
+    const [task] = parseTeamPlan(JSON.stringify({tasks:[{id:'test',title:'Verify',role:'tester',verificationCommands:['npm test','npm run test:browser']}]})); task.status='completed';
+    const proof: TaskEvidence = {inspected:true,successfulChecks:2,failedChecks:1,toolErrors:1,checks:[
+      {command:'python --version',exitCode:9009,excerpt:'Python missing'},
+      {command:'npm test',exitCode:0,excerpt:'4 passed'},
+      {command:'npm run test:browser',exitCode:0,excerpt:'11 passed'}
+    ]};
+    expect(verificationEvidence(task,proof)).toMatchObject({successfulChecks:2,failedChecks:0,warnings:1});
+    expect(qualityGate([task],new Map([[task.id,proof]])).verdict).toBe('PASS');
+    expect(proof.failedChecks).toBe(1); // Historical records are preserved.
+    proof.checks!.push({command:'npm test',exitCode:1,excerpt:'real failure'});
+    expect(qualityGate([task],new Map([[task.id,proof]])).verdict).toBe('FAIL');
+  });
+  it('cannot use version probes as successful test evidence and cannot exempt an explicitly required probe', () => {
+    const [task] = parseTeamPlan(JSON.stringify({tasks:[{id:'test',title:'Verify',role:'tester'}]}));task.status='completed';
+    const proof:TaskEvidence={inspected:true,successfulChecks:1,failedChecks:0,toolErrors:0,checks:[{command:'node --version',exitCode:0,excerpt:'version'}]};
+    expect(qualityGate([task],new Map([[task.id,proof]])).verdict).toBe('UNVERIFIED');
+    task.verificationCommands=['python --version'];proof.checks=[{command:'python --version',exitCode:9009,excerpt:'missing'}];
+    expect(qualityGate([task],new Map([[task.id,proof]])).verdict).toBe('FAIL');
+    expect(isEnvironmentProbe('python --version && npm test')).toBe(false);
+    expect(isEnvironmentProbe('node -e "process.exit(1)"')).toBe(false);
+  });
+  it('records a timed-out verification as a blocking failure with its actual command', () => {
+    const proof:TaskEvidence={inspected:false,successfulChecks:0,failedChecks:0,toolErrors:0};const calls=new Map<string,string>();
+    recordEvidence(proof,{role:'assistant',content:'',tool_calls:[{id:'test',type:'function',function:{name:'run_command',arguments:JSON.stringify({command:'npm test'})}}]},calls);
+    recordEvidence(proof,{role:'tool',tool_call_id:'test',content:JSON.stringify({ok:false,error:'Command timed out after 120000 ms'})},calls);
+    expect(verificationEvidence({},proof)).toMatchObject({failedChecks:1,failures:['npm test · Command timed out after 120000 ms']});
+  });
   it('keeps failed command evidence when the runner reports ok=false', () => {
     const evidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
     const calls = new Map([['check', 'run_command']]);

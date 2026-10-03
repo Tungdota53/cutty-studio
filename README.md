@@ -26,6 +26,7 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 - Mỗi tác vụ có người phụ trách, tệp được giao, tiêu chí nghiệm thu và quan hệ phụ thuộc.
 - Nhánh độc lập tiếp tục khi nhánh khác lỗi; tác vụ cần kết quả còn thiếu hiển thị rõ lý do bị chặn.
 - Pipeline lưu kết quả kiểm tra và bằng chứng, hỗ trợ vòng sửa lỗi và kiểm tra lại các bước liên quan.
+- Nghiệm thu phân biệt dò phiên bản môi trường với kiểm thử bắt buộc. Lịch sử thử nghiệm của coder được giữ để tra cứu; kết luận dựa vào lệnh bắt buộc và tester/reviewer kiểm tra nguồn cuối. Timeout và kiểm thử thật thất bại vẫn chặn, kèm tên lệnh và nguyên nhân.
 
 ### Sơ đồ agent trực tiếp
 

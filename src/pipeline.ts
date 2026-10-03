@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Task } from './types.js';
-import { executionDiagnosis, type TaskEvidence } from './team-artifacts.js';
+import { executionDiagnosis, verificationEvidence, isEnvironmentProbe, type TaskEvidence } from './team-artifacts.js';
 import { taskPhase } from './team-protocol.js';
 import { redact } from './security.js';
 
@@ -35,14 +35,15 @@ export class Pipeline {
   tool() { this.tools++; }
   repair(round: number, taskId: string, findings: string[]) { this.repairs.push({ round, taskId, findings }); }
   snapshot(tasks: Task[], evidence: Map<string, TaskEvidence>, status = 'running', gate?: unknown) {
-    const checks = [...evidence.values()].flatMap(proof => proof.checks || []);
+    const summaries = tasks.map(task => verificationEvidence(task, evidence.get(task.id)));
     const report = {
       version: 1, sessionId: this.sessionId, sequence: ++this.sequence, status,
       updatedAt: new Date().toISOString(), elapsedMs: Date.now() - this.started, maxAgents: this.maxAgents,
       peakConcurrency: this.peak, attempts: this.attempts, toolCalls: this.tools,
       completed: tasks.filter(task => task.status === 'completed').length, total: tasks.length,
-      successfulChecks: checks.filter(check => check.exitCode === 0).length,
-      failedChecks: checks.filter(check => check.exitCode !== 0).length,
+      successfulChecks: summaries.reduce((sum, proof) => sum + proof.successfulChecks, 0),
+      failedChecks: summaries.reduce((sum, proof) => sum + proof.failedChecks, 0),
+      environmentWarnings: summaries.reduce((sum, proof) => sum + proof.warnings, 0),
       repairs: this.repairs, diagnostics: inspectPlan(tasks), execution: executionDiagnosis(tasks), gate,
       tasks: tasks.map(task => {
         const proof = evidence.get(task.id);
@@ -50,7 +51,7 @@ export class Pipeline {
           id: task.id, title: task.title, phase: taskPhase(task), status: task.status, model: task.model,
           dependencies: task.dependencies, attempt: task.retries || 0, error: task.error || null,
           criteria: task.acceptanceCriteria || [], requiredCommands: task.verificationCommands || [],
-          evidence: proof ? { inspected: proof.inspected, stale: proof.stale || false, checks: (proof.checks || []).map(check => ({ command: check.command, exitCode: check.exitCode, excerpt: check.excerpt.slice(0, 800) })) } : null
+          evidence: proof ? { requiredPassed: (task.verificationCommands || []).filter(command => proof.checks?.some(check => check.exitCode === 0 && check.command.trim() === command.trim())).length, executionErrors: proof.executionErrors || [], inspected: proof.inspected, stale: proof.stale || false, checks: (proof.checks || []).map(check => ({ command: check.command, exitCode: check.exitCode, excerpt: check.excerpt.slice(0, 800), kind: isEnvironmentProbe(check.command, task.verificationCommands) ? 'probe' : 'verification' })) } : null
         };
       })
     };

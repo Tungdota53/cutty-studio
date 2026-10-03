@@ -8,6 +8,7 @@ import { Worktrees } from '../src/worktree.js';
 import { loadConfig } from '../src/config.js';
 import { Store } from '../src/db.js';
 import { ModelRouter } from '../src/router.js';
+import { Tools } from '../src/tools.js';
 import type { ModelClient } from '../src/model.js';
 import { ModelStreamInterruptedError } from '../src/model.js';
 import type { Message } from '../src/types.js';
@@ -31,6 +32,26 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('continues dependent review when required execution passes despite an optional Python probe failure', async () => {
+    const dir=root(), command='node -e "process.exit(0)"';
+    const original=Tools.prototype.execute;
+    vi.spyOn(Tools.prototype,'execute').mockImplementation(async function(this:Tools,name,raw,signal){
+      if(name==='run_command'&&JSON.parse(raw).command==='python --version')return {ok:false,output:'exit=9009\nstdout:\n\nstderr:\nPython unavailable',error:'Command failed'};
+      return original.call(this,name,raw,signal);
+    });
+    try {
+      const {team}=runner(dir,[{id:'code',role:'coder',title:'Code',description:'code',expectedFiles:['a.txt']},{id:'test',role:'tester',title:'Test',description:'test',dependencies:['code'],verificationCommands:[command]},{id:'review',role:'reviewer',title:'Review',description:'review',dependencies:['test']}],async messages=>{
+        const request=messages.findLast(item=>item.role==='user')?.content;
+        if(!messages.some(item=>item.role==='tool')) {
+          const call=(id:string,name:string,args:any)=>({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+          return {content:'',toolCalls:request==='code'?[call('write','write_file',{path:'a.txt',content:'source'})]:request==='test'?[call('probe','run_command',{command:'python --version'}),call('check','run_command',{command})]:[call('read','read_file',{path:'a.txt'})]};
+        }
+        return {content:request==='review'?'{"verdict":"PASS","findings":[]}':'PASS: required check succeeded; Python optional',toolCalls:[]};
+      });
+      const result=await team.run('Verify project',()=>{});
+      expect(result.gate.verdict).toBe('PASS');expect(result.tasks.find(task=>task.id==='review')?.status).toBe('completed');expect(result.tasks.some(task=>task.id.startsWith('repair-'))).toBe(false);
+    } finally { vi.restoreAllMocks(); }
+  });
   it('resumes an interrupted DAG without replanning or rewriting a completed producer', async () => {
     const dir = root(); let writes = 0, checks = 0;
     const { team } = runner(dir, [
