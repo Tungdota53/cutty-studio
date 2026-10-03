@@ -45,11 +45,21 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 
 - Lưu lịch sử, lời gọi công cụ và kết quả theo từng cuộc trò chuyện.
 - Chế độ tự động dùng cửa sổ context do nhà cung cấp công bố; có giới hạn thủ công/dự phòng khi API thiếu metadata.
-- Context dự phòng mặc định **131.072 token**; bảng ngữ cảnh phân biệt cửa sổ hiệu lực, ngân sách đầu vào và phần dành cho đầu ra. Lịch sử hiển thị dung lượng thực tế đã dùng trong phiên.
+- Context dự phòng mặc định **1.000.000 token**, tự nâng cấu hình auto cũ; dùng giới hạn thực tế khi API công bố và giữ cấu hình thủ công. Bảng ngữ cảnh phân biệt cửa sổ hiệu lực, ngân sách đầu vào và phần dành cho đầu ra.
 - Hiển thị dung lượng ước tính, token đầu vào/đầu ra và số lần nén; hỗ trợ nén thủ công.
 - Nén lịch sử cũ khi cần, giữ yêu cầu và tra cứu lại bản ghi gốc của tác vụ.
 - Đặt ngân sách lượt suy luận và lượt công cụ về **0** để không giới hạn số lượt; nút Dừng và kiểm tra lặp không tiến triển vẫn hoạt động.
 - Khi stream bị ngắt, tiếp tục trên cùng model với tối đa hai lần phục hồi; giữ checkpoint và loại bỏ lời gọi công cụ chưa hoàn chỉnh.
+- Trong **Công cụ phiên**, ghim yêu cầu và thêm tệp nguồn vào context; xem nguồn, nhóm lượt và lượng token ước tính. Ghi nhớ được giữ qua các lần nén.
+- Checkpoint tự lưu trước/sau chỉnh sửa tệp; xem diff, chọn tệp hoàn tác và kiểm tra xung đột với thay đổi mới của bạn. Snapshot lệnh có phạm vi và dung lượng giới hạn, hiển thị phần không được lưu.
+- Tiếp tục chat hoặc Teamwork bị gián đoạn từ nhật ký lưu trên máy. Task hoàn tất được giữ khi dấu vết tệp còn đúng; thao tác ghi chưa xác định kết quả được đánh dấu để kiểm tra.
+- Đặt ngân sách token và USD cho mỗi agent/task, xem thời gian, số lượt gọi và cảnh báo từ 80%. Giá tính theo đơn giá bạn nhập; chưa có giá được hiển thị rõ. Giới hạn được kiểm tra trước lượt gọi tiếp theo.
+
+### Preview web cạnh chat
+
+- Mở tệp HTML trong workspace để xem cùng CSS/JavaScript trên bảng preview riêng; tự tải lại khi tệp web thay đổi.
+- Hiển thị console, lỗi JavaScript và promise bị từ chối; hỗ trợ tải lại thủ công.
+- Preview chạy trong iframe cô lập, không có quyền truy cập backend và chặn tệp bí mật/nội bộ. Preview hiện hỗ trợ dự án web tĩnh; ứng dụng cần dev server phải build ra HTML trước.
 
 ### Kết nối nhiều MCP
 
@@ -58,6 +68,7 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 - Agent tự thấy và gọi các công cụ được phép, với tên riêng theo server để tránh trùng.
 - Các agent chạy song song có thể dùng nhiều server đồng thời; lỗi của một kết nối được giữ riêng.
 - Công cụ MCP được lọc theo vai trò và tính chất chỉ đọc. Tác vụ ghi không tự được gửi lại khi lỗi kết nối.
+- Chỉ nạp nhóm công cụ phù hợp nhiệm vụ trong ngân sách schema; agent tìm và kích hoạt thêm khi cần. Tra cứu công cụ từ **Công cụ phiên**.
 
 ## Tải và bắt đầu
 

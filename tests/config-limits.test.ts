@@ -23,10 +23,12 @@ describe('Provider-sized context and optional run budgets', () => {
     expect(c.maxAgentIterations).toBe(0);
     expect(c.maxAgentToolCalls).toBe(0);
   });
-  it('preserves explicit auto mode and the fallback when metadata is unavailable', () => {
+  it('migrates the old automatic fallback without changing explicit manual or larger windows', () => {
     const c = loadConfig(project({ contextMode: 'auto', contextWindow: 128_000 }));
     expect(c.contextMode).toBe('auto');
-    expect(c.contextWindow).toBe(128_000);
+    expect(c.contextWindow).toBe(1_000_000);
+    expect(loadConfig(project({ contextMode: 'manual', contextWindow: 128_000 })).contextWindow).toBe(128_000);
+    expect(loadConfig(project({ contextMode: 'auto', contextWindow: 2_000_000 })).contextWindow).toBe(2_000_000);
   });
   it('accepts unlimited and high finite budgets but rejects unsafe or negative values', () => {
     expect(teamSchema.parse({ maxAgentIterations: 0, maxAgentToolCalls: 0 })).toMatchObject({ maxAgentIterations: 0, maxAgentToolCalls: 0 });

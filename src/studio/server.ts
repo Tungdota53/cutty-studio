@@ -14,7 +14,11 @@ import { Agent } from '../agent.js';
 import { Teamwork } from '../teamwork.js';
 import { taskPhase } from '../team-protocol.js';
 import crypto from 'node:crypto';
-import { ConversationContext, contextLimits } from '../conversation.js';
+import { ConversationContext, contextLimits, inspectContext, addContextPin, removeContextPin, attachContextFile, removeContextAttachment } from '../conversation.js';
+import { CheckpointStore } from '../checkpoints.js';
+import { RunJournal } from '../run-journal.js';
+import { runBudgetSchema, modelRatesSchema } from '../budgets.js';
+import { WebPreview } from './preview.js';
 import { systemPrompt } from '../prompts.js';
 import { roleCatalog, roleProfile, roles, teamSchema, assignedAgent, defaultAgents } from '../roles.js';
 import { SkillLibrary } from '../skills.js';
@@ -68,6 +72,7 @@ export function sanitizeConfig(config: Config): Config {
   if (sanitized.apiKey) {
     sanitized.apiKey = '[REDACTED]';
   }
+  try { const endpoint=new URL(sanitized.baseUrl);endpoint.search='';endpoint.hash='';sanitized.baseUrl=endpoint.toString().replace(/\/$/,''); } catch { /* Legacy invalid endpoints remain editable. */ }
   // MCP connection details may carry credentials. Use get_mcp's safe status API.
   delete sanitized.mcpServers;
   return sanitized;
@@ -97,7 +102,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   }
 
   let c = loadConfig(workspaceOverride);
-  c.contextWindow = Number(process.env.VIBE_CONTEXT_WINDOW || c.contextWindow || 131072);
+  c.contextWindow = Number(process.env.VIBE_CONTEXT_WINDOW || c.contextWindow || 1000000);
+  const preview = new WebPreview();
   c.maxOutputTokens = Number(process.env.VIBE_OUTPUT_TOKENS || c.maxOutputTokens || 4096);
   contextLimits(c);
   const db = new Store(path.join(c.workspace, '.vibe'));
@@ -131,7 +137,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   async function effectiveContext(model = c.model) {
     const metadata = c.apiKey ? await client.modelLimits(model) : undefined;
     const provider = metadata?.contextWindow;
-    const fallback = c.contextWindow ?? 131072;
+    const fallback = c.contextWindow ?? 1000000;
     const window = provider && provider >= 4096 ? c.contextMode === 'manual' ? Math.min(fallback, provider) : provider : fallback;
     const output = Math.min(c.maxOutputTokens ?? 4096, metadata?.maxOutputTokens ?? Infinity, Math.floor(window / 2));
     return { config: { ...c, contextWindow: window, maxOutputTokens: output }, limitSource: (c.contextMode === 'manual' ? 'manual' : provider ? 'provider' : 'fallback') as 'manual' | 'provider' | 'fallback' };
@@ -208,7 +214,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         res.writeHead(401); res.end('Unauthorized'); return;
       }
 
-      if (['/app.css', '/app.js', '/team-map.js', '/chat.css', '/chat-output.js'].includes(pathname)) {
+      if (['/app.css', '/app.js', '/team-map.js', '/chat.css', '/chat-output.js', '/workbench.js', '/workbench.css'].includes(pathname)) {
         res.writeHead(200, { 'Content-Type': pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         res.end(fs.readFileSync(path.join(__dirname, 'public', pathname.slice(1))));
         return;
@@ -341,7 +347,39 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
       }
 
       try {
-        if (msg.type === 'get_team') {
+        if (['get_workbench','pin_context','unpin_context','attach_context','detach_context','get_checkpoints','checkpoint_diff','restore_checkpoint','configure_budget','get_mcp_tools','start_preview','stop_preview'].includes(msg.type)) {
+          const sessionId = String(msg.sessionId || '');
+          if (msg.type === 'start_preview') { ws.send(JSON.stringify({type:'preview_ready',...await preview.start(c.workspace,String(msg.entry || 'index.html'),()=>broadcast({type:'preview_changed'}))})); return; }
+          if (msg.type === 'stop_preview') { await preview.close(); return; }
+          if (msg.type === 'get_mcp_tools') { const registry=McpRegistry.forWorkspace(c.workspace,c.mcpServers || {}); ws.send(JSON.stringify({type:'mcp_catalog',catalog:await registry.catalog({serverId:msg.serverId,query:String(msg.query || ''),limit:64})})); return; }
+          if (msg.type === 'configure_budget') {
+            if(busy) throw new Error('Dừng tác vụ trước khi đổi ngân sách.');
+            const runBudget=runBudgetSchema.parse(msg.budget || {}),modelRates=modelRatesSchema.parse(msg.rates || {});
+            const file=path.join(c.workspace,'.vibe','config.json'); let saved={};try{saved=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}
+            fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,JSON.stringify({...saved,runBudget,modelRates},null,2));c={...c,runBudget,modelRates};client=new ModelClient(c);router=new ModelRouter(c);
+            ws.send(JSON.stringify({type:'budget_config',runBudget,modelRates}));return;
+          }
+          if (!/^(chat-[a-zA-Z0-9-]{1,80}|session-[a-f0-9]{8})$/.test(sessionId)) throw new Error('Chọn một phiên trước.');
+          const checkpoints=new CheckpointStore(c.workspace);
+          let sessionCheckpoints=checkpoints.list().filter(item=>item.sessionId===sessionId || item.sessionId?.startsWith(sessionId+':'));
+          if(['checkpoint_diff','restore_checkpoint'].includes(msg.type)&&!sessionCheckpoints.some(item=>item.id===msg.id))throw new Error('Checkpoint không thuộc phiên đã chọn.');
+          if(msg.type==='checkpoint_diff') { ws.send(JSON.stringify({type:'checkpoint_detail',sessionId,...checkpoints.diff(String(msg.id))}));return; }
+          if(msg.type==='restore_checkpoint') { if(busy)throw new Error('Dừng tác vụ trước khi hoàn tác.');const result=checkpoints.restore(String(msg.id),msg.files);progress(sessionId,{type:'checkpoint_restored',status:'completed',message:`Đã hoàn tác ${result.restored.length} tệp.`}); }
+          if(msg.type==='restore_checkpoint')sessionCheckpoints=checkpoints.list().filter(item=>item.sessionId===sessionId || item.sessionId?.startsWith(sessionId+':'));
+          const memory=db.conversation(sessionId);
+          if(['pin_context','unpin_context','attach_context','detach_context'].includes(msg.type)) {
+            if(busy)throw new Error('Đợi tác vụ hoàn tất trước khi sửa context.');
+            if(msg.type==='pin_context')addContextPin(memory,String(msg.content || ''),String(msg.label || 'Ghi nhớ'));
+            if(msg.type==='unpin_context')removeContextPin(memory,String(msg.id));
+            if(msg.type==='attach_context')attachContextFile(memory,c.workspace,String(msg.path || ''));
+            if(msg.type==='detach_context')removeContextAttachment(memory,String(msg.id));
+            db.saveConversation(sessionId,memory);
+          }
+          const limits=await effectiveContext(db.sessionInfo(sessionId)?.model || c.model);
+          let resume: Record<string,unknown>=new RunJournal(c.workspace,sessionId).status();
+          if(sessionId.startsWith('session-')) { try { const saved=JSON.parse(fs.readFileSync(path.join(c.workspace,'.vibe','sessions',sessionId,'resume.json'),'utf8'));resume={status:saved.status,resumable:saved.status!=='completed',uncertain:[]}; }catch{} }
+          ws.send(JSON.stringify({type:'workbench_state',sessionId,context:inspectContext(limits.config,memory,systemPrompt('general',c.workspace),toolDefinitions),checkpoints:sessionCheckpoints,resume,runBudget:c.runBudget,modelRates:c.modelRates,telemetry:db.progressHistory(sessionId).filter(e=>e.type==='budget_update')}));return;
+        } else if (msg.type === 'get_team') {
           ws.send(JSON.stringify({ type: 'team_config', ...teamConfig() }));
         } else if (msg.type === 'get_mcp' || msg.type === 'configure_mcp') {
           if (msg.type === 'configure_mcp') {
@@ -392,8 +430,9 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           }
         } else if (msg.type === 'configure') {
           if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi cấu hình.');
-          const endpoint = new URL(msg.baseUrl);
+          let endpoint = new URL(msg.baseUrl);
           if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('API URL không hợp lệ.');
+          try { const prior=new URL(c.baseUrl);const visible=new URL(c.baseUrl);visible.search='';visible.hash='';if(endpoint.toString().replace(/\/$/,'')===visible.toString().replace(/\/$/,''))endpoint=prior; }catch{ /* Explicit new endpoint takes precedence. */ }
           if (typeof msg.model !== 'string' || !msg.model.trim()) throw new Error('Nhập tên model.');
           const model = msg.model.trim();
           const contextMode = msg.contextMode ?? c.contextMode ?? 'auto';
@@ -452,8 +491,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               text: `[Approval Bridge] Thao tác ${msg.id} ${isApproved ? 'đã được phê duyệt' : 'đã bị từ chối'}.`,
             });
           }
-        } else if (msg.type === 'command' || msg.type === 'chat') {
-          const line = (msg.prompt || msg.line || '').trim();
+        } else if (msg.type === 'command' || msg.type === 'chat' || msg.type === 'resume_chat') {
+          const line = msg.type === 'resume_chat' ? /^session-[a-f0-9]{8}$/.test(String(msg.sessionId)) ? `/teamwork-resume ${msg.sessionId}` : 'Tiếp tục nhiệm vụ bị gián đoạn từ kết quả đã lưu. Kiểm tra trạng thái thao tác chưa rõ trước khi thay đổi tệp.' : (msg.prompt || msg.line || '').trim();
           if (!line) return;
           if (busy) { ws.send(JSON.stringify({ type: 'error', message: 'Một tác vụ đang chạy.' })); return; }
           busy = true;
@@ -478,7 +517,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               await manager.prepare(systemPrompt('general', c.workspace), toolDefinitions, client, c.model, activeAbort.signal, true);
               broadcast({ type: 'memory_summary', sessionId, summary: memory.summary });
               broadcast({ type: 'stream_end' });
-            } else if (cmd === 'teamwork') {
+            } else if (cmd === 'teamwork' || cmd === 'teamwork-resume') {
               assertConfigured(c);
               const tw = new Teamwork(c, db, client, router, approve);
               activeTeam = tw;
@@ -487,22 +526,24 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                 text: `[Teamwork] Khởi chạy tối đa ${c.maxAgents} agents cho mục tiêu: ${arg}`,
               });
 
-              const result = await tw.run(arg, (ev) => {
+              const onTeamEvent = (ev: any) => {
                 if (typeof ev === 'string') {
                   broadcast({ type: 'terminal_log', text: ev });
                 } else {
                   if (ev.type === 'session_start') {
                     teamworkState = { sessionId: ev.sessionId, goal: ev.goal, tasks: [], status: 'running' };
-                    db.message(ev.sessionId, 'user', arg);
+                    if(cmd !== 'teamwork-resume')db.message(ev.sessionId, 'user', arg);
                     broadcast({ type: 'chat_session', previousSessionId: msg.sessionId, sessionId: ev.sessionId });
                   }
                   if (ev.agentId && !ev.taskId && ev.role === 'planner') teamworkState = { ...teamworkState, planner: { ...teamworkState?.planner, ...ev } };
                   if (ev.type === 'task_snapshot' || ev.type === 'session_end') teamworkState = { ...teamworkState, ...ev };
                   if (ev.type === 'session_end' && ev.message && ['failed', 'cancelled'].includes(String(ev.status))) db.message(teamworkState.sessionId, 'assistant', `Teamwork ${ev.status}: ${ev.message}`);
+                  if(ev.budget && teamworkState?.sessionId)progress(teamworkState.sessionId,{type:'budget_update',...ev.budget,agentId:ev.agentId,taskId:ev.taskId,message:ev.budget.warnings.join(' · ') || `Đã dùng ${ev.budget.tokens} token.`});
                   if (teamworkState?.sessionId && ev.type !== 'task_snapshot') progress(teamworkState.sessionId, { type: ev.type, agentId: ev.agentId, taskId: ev.taskId, tool: ev.step, model: ev.model, status: ev.status, message: ev.message || `${ev.type}${ev.taskId ? ': ' + ev.taskId : ''}` });
                   broadcast({ type: 'teamwork_event', event: ev });
                 }
-              });
+              };
+              const result = cmd==='teamwork-resume' ? await tw.resume(arg,onTeamEvent) : await tw.run(arg,onTeamEvent);
 
               const teamworkAnswer = `**Kết quả Teamwork**\n\nNghiệm thu: ${result.gate.verdict}\n${result.gate.reasons.join('\n')}\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}`;
               if (teamworkState?.sessionId) db.message(teamworkState.sessionId, 'assistant', teamworkAnswer);
@@ -577,7 +618,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             const memory = db.conversation(sessionId);
             db.session(sessionId, 'running', c.model, line.slice(0, 100));
             const saveMessage = (role: 'user' | 'assistant', content: string) => db.message(sessionId, role, content);
-            saveMessage('user', line);
+            if(msg.type !== 'resume_chat')saveMessage('user', line);
             broadcast({ type: 'chat_session', previousSessionId: msg.sessionId, sessionId });
             progress(sessionId, { type: 'run_start', status: 'running', message: 'Đang xử lý yêu cầu.' });
             const agent = new Agent(
@@ -609,6 +650,9 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               }
             }, [], {
               state: memory,
+              journal: new RunJournal(c.workspace,sessionId),
+              resume: msg.type === 'resume_chat',
+              onBudget: stats => progress(sessionId,{type:'budget_update',...stats,message:stats.warnings.join(' · ') || `Đã dùng ${stats.tokens} token.`}),
               recall: (query, limit, beforeId) => db.recall(sessionId, query, limit, beforeId),
               namedAgentId: selected?.id,
               onModel: model => { activeModel = model; progress(sessionId, { type: 'model_selected', model, agentId: selected?.id || 'agent-general', status: 'running', message: `Đang dùng ${model}.` }); },
@@ -633,7 +677,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             db.session(sessionId, 'completed', activeModel);
             progress(sessionId, { type: 'run_end', status: 'completed', message: 'Đã hoàn thành yêu cầu.' });
             } catch (error) {
-              if (db.db.open) db.saveConversation(sessionId, memory);
+              if (db.db.open && msg.type !== 'resume_chat') db.saveConversation(sessionId, memory);
               saveMessage('assistant', `${fullResponse}${fullResponse ? '\n\n' : ''}**Lỗi:** ${error instanceof Error ? error.message : String(error)}`);
               const status = activeAbort.signal.aborted ? 'cancelled' : 'failed';
               db.session(sessionId, status, activeModel);
@@ -656,7 +700,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           }
         }
       } catch (err: any) {
-        if (['configure', 'configure_team', 'get_team', 'get_mcp', 'configure_mcp', 'get_models', 'search_skills', 'get_conversation'].includes(msg.type)) {
+        if (!['chat','command','resume_chat'].includes(msg.type)) {
           ws.send(JSON.stringify({ type: 'error', message: err?.message || String(err) }));
           return;
         }
@@ -714,6 +758,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
       }
       server.close(() => resolve());
     });
+    await preview.close();
     db.close();
   };
 

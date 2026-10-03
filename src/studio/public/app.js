@@ -61,7 +61,7 @@ function configure(next) {
   $('model-name').textContent = next.model;
   $('base-url').value = next.baseUrl; $('model-input').value = next.model;
   $('context-mode').value = next.contextMode || 'auto';
-  $('context-window').value = next.contextWindow || 131072; $('output-tokens').value = next.maxOutputTokens || 4096;
+  $('context-window').value = next.contextWindow || 1000000; $('output-tokens').value = next.maxOutputTokens || 4096;
   showContextCapability();
   if (!currentContext) showContext(null);
   $('api-key').placeholder = next.apiKey ? 'Đã có khóa · để trống để giữ nguyên' : 'Nhập khóa API';
@@ -76,7 +76,7 @@ function showContextCapability() {
 const formatTokens = number => new Intl.NumberFormat('vi-VN').format(number || 0);
 function showContext(stats, summary) {
   currentContext = stats;
-  const windowSize = stats?.window || config?.contextWindow || 131072;
+  const windowSize = stats?.window || config?.contextWindow || 1000000;
   $('context-button').textContent = stats ? `Ngữ cảnh ~${stats.percent}%` : `Ngữ cảnh ${formatTokens(windowSize)}`;
   $('context-window-value').textContent = formatTokens(windowSize);
   $('context-input-value').textContent = stats ? '~' + formatTokens(stats.estimatedInput) : 'Chưa gửi';
@@ -172,6 +172,7 @@ function connect() {
   ws.onerror = () => {};
   ws.onmessage = async ({ data }) => {
     let msg; try { msg = JSON.parse(data); } catch { return; }
+    Workbench.event(msg);
     switch (msg.type) {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
       case 'model_catalog': modelCapabilities = msg.capabilities || []; showContextCapability(); $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
@@ -427,4 +428,5 @@ $('mcp-form').onsubmit = event => {
     if (send({type:'configure_mcp',servers})) { $('mcp-status').textContent = 'Đang kết nối các server…'; $('mcp-form').querySelector('[type=submit]').disabled = true; }
   } catch (error) { $('mcp-status').textContent = error.message; }
 };
+Workbench.init({send,toast,config:()=>config,busy:()=>busy,session:()=>currentSession,ensureSession:()=>{if(!currentSession)currentSession=`chat-${crypto.randomUUID()}`;},resume:()=>{assistant=null;response='';send({type:'resume_chat',sessionId:currentSession});}});
 connect();

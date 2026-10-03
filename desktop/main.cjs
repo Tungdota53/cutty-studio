@@ -10,7 +10,7 @@ const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
 function readSettings() {
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'));
-    if (settings.contextMode !== 'manual' && (!settings.contextWindow || settings.contextWindow <= 32768)) settings.contextWindow = 131072;
+    if (settings.contextMode !== 'manual' && (!settings.contextWindow || settings.contextWindow <= 131072)) settings.contextWindow = 1000000;
     if (settings.encryptedKey && safeStorage.isEncryptionAvailable()) settings.apiKey = safeStorage.decryptString(Buffer.from(settings.encryptedKey, 'base64'));
   } catch { settings = {}; }
 }
@@ -79,7 +79,7 @@ else {
       if (!values || typeof values.baseUrl !== 'string' || typeof values.model !== 'string' || typeof values.apiKey !== 'string') throw new Error('Cấu hình không hợp lệ.');
       const url = new URL(values.baseUrl);
       if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || !values.model.trim()) throw new Error('Cấu hình không hợp lệ.');
-      const contextWindow = values.contextWindow ?? 131072, maxOutputTokens = values.maxOutputTokens ?? 4096, contextMode = values.contextMode ?? 'auto';
+      const contextWindow = values.contextWindow ?? 1000000, maxOutputTokens = values.maxOutputTokens ?? 4096, contextMode = values.contextMode ?? 'auto';
       if (!['auto', 'manual'].includes(contextMode) || !Number.isSafeInteger(contextWindow) || contextWindow < 4096 || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 128 || maxOutputTokens > contextWindow / 2) throw new Error('Giới hạn context/đầu ra không hợp lệ.');
       settings = { ...settings, baseUrl: values.baseUrl, model: values.model, apiKey: values.apiKey || settings.apiKey, contextMode, contextWindow, maxOutputTokens };
       saveSettings(); return { keySaved: !settings.apiKey || safeStorage.isEncryptionAvailable() };

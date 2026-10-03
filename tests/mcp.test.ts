@@ -17,7 +17,7 @@ afterEach(async () => {
   roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true }));
 });
 function root() { const value = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-mcp-')); roots.push(value); return value; }
-async function fixture(label = 'A', fail = false) {
+async function fixture(label = 'A', fail = false, customTools?: unknown[]) {
   const calls: any[] = [], notifications: any[] = []; let initializations = 0;
   const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' || request.method === 'DELETE') { response.writeHead(405); response.end(); return; }
@@ -28,7 +28,7 @@ async function fixture(label = 'A', fail = false) {
     if (fail) { response.writeHead(401); response.end('Bearer super-secret-token'); return; }
     let result: unknown;
     if (payload.method === 'initialize') { initializations++; result = { protocolVersion: '2025-11-25', capabilities: { tools: {} }, serverInfo: { name: label, version: '1' } }; }
-    else if (payload.method === 'tools/list') result = { tools: [
+    else if (payload.method === 'tools/list') result = { tools: customTools || [
       { name: 'inspect', description: 'Inspect', inputSchema: { type: 'object', properties: { value: { type: 'string' } } }, annotations: { readOnlyHint: true } },
       { name: 'mutate', description: 'Mutate', inputSchema: { type: 'object', properties: {} } }
     ] };
@@ -43,6 +43,65 @@ async function fixture(label = 'A', fail = false) {
 }
 function registry(dir: string, config: unknown) { const value = new McpRegistry(dir, mcpServersSchema.parse(config)); registries.push(value); return value; }
 describe('Multi MCP registry', () => {
+  it('ranks a bounded initial subset fairly across servers and activates omitted tools without replacing existing schemas', async () => {
+    const tools = Array.from({ length: 200 }, (_, index) => ({ name: `analyze_log_${index}`, description: 'Analyze diagnostic logs', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }));
+    tools.push({ name: 'rare_report', description: 'Rare archaeology report', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } });
+    const [large, relevant] = await Promise.all([fixture('large', false, tools), fixture('weather', false, [{ name: 'weather_forecast', description: 'Weather city forecast', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } }])]);
+    const mcp = registry(root(), { large: { transport: 'http', url: large.url }, weather: { transport: 'http', url: relevant.url } });
+    const session = await mcp.createSession('reviewer', false, 'weather city forecast', undefined, { maxTools: 8, maxSchemaTokens: 2048 });
+    const before = session.definitions();
+    expect(before).toHaveLength(4);
+    expect(before[0].function.name).toContain('weather_forecast');
+    expect(before.some(tool => tool.function.name.startsWith('mcp_large_'))).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(before), 'utf8') / 3).toBeLessThan(2048);
+    const found = await session.search('archaeology');
+    expect(found).toHaveLength(1);
+    expect(found[0].inputSchema).toBeUndefined();
+    expect(session.handles(found[0].id)).toBe(false);
+    expect(session.isReadOnly(found[0].id)).toBe(false);
+    expect((await session.call(found[0].id, {})).ok).toBe(false);
+    expect(session.activate([found[0].id])).toMatchObject({ ok: true, activeToolCount: 5 });
+    expect(session.isReadOnly(found[0].id)).toBe(true);
+    expect(session.definitions().slice(0, before.length)).toEqual(before);
+    expect((await session.call(found[0].id, {})).ok).toBe(true);
+    expect(large.calls).toHaveLength(1);
+  });
+  it('keeps activation permission-scoped between concurrent sessions and reports oversized schemas', async () => {
+    const server = await fixture('sized', false, [
+      { name: 'inspect', description: 'Inspect metadata', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+      { name: 'update', description: 'Update records', inputSchema: { type: 'object' } },
+      { name: 'huge', description: 'Huge schema', inputSchema: { type: 'object', description: 'Very large schema '.repeat(1000) }, annotations: { readOnlyHint: true } }
+    ]);
+    const mcp = registry(root(), { sized: { transport: 'http', url: server.url } });
+    const [review, coder] = await Promise.all([mcp.createSession('reviewer', false, 'inspect', undefined, { maxTools: 4, maxSchemaTokens: 512 }), mcp.createSession('coder', false, 'inspect', undefined, { maxTools: 4, maxSchemaTokens: 512 })]);
+    const mutation = (await coder.search('update'))[0].id;
+    expect(await review.search('update')).toEqual([]);
+    expect(review.activate([mutation]).ok).toBe(false);
+    expect((await review.call(mutation, {})).ok).toBe(false);
+    const oversized = (await review.search('huge'))[0];
+    expect(oversized.schemaTokens).toBeGreaterThan(512);
+    expect(review.activate([oversized.id]).rejected[0].reason).toContain('budget');
+    expect((await review.search('huge', { includeSchema: true }))[0]).toMatchObject({ id: oversized.id, schemaOmitted: true });
+    expect(review.definitions().every(tool => tool.function.name.includes('_inspect_'))).toBe(true);
+    expect(server.calls).toHaveLength(0);
+  });
+  it('does not expose credentials echoed in catalog metadata and validates query bounds before connecting', async () => {
+    const server = await fixture('safe', false, [{ name: 'inspect', title: 'Inspect hidden-token-value', description: 'Authorization Bearer hidden-token-value', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }]);
+    const mcp = registry(root(), { safe: { transport: 'http', url: server.url + '?token=hidden-token-value', headers: { Authorization: 'Bearer hidden-token-value' } } });
+    await expect(mcp.catalog({ query: 'secret'.repeat(500) })).rejects.toThrow('2000');
+    expect(server.initializations()).toBe(0);
+    const info = await mcp.catalog({ serverId: 'safe', query: 'inspect' });
+    expect(JSON.stringify(info)).not.toContain('hidden-token-value');
+    expect(info[0]).toMatchObject({ serverId: 'safe', readOnly: true });
+    expect(info[0].inputSchema).toBeUndefined();
+  });
+  it('namespaces long server IDs uniquely even when their readable prefixes coincide', async () => {
+    const server = await fixture(); const shared = 'longserveridentifierprefix';
+    const mcp = registry(root(), { [`${shared}one`]: { transport: 'http', url: server.url }, [`${shared}two`]: { transport: 'http', url: server.url } });
+    const definitions = await mcp.definitions('coder');
+    expect(definitions).toHaveLength(4);
+    expect(new Set(definitions.map(tool => tool.function.name)).size).toBe(4);
+  });
   it('connects two servers concurrently and isolates identical names and tool calls', async () => {
     const [a, b] = await Promise.all([fixture('A'), fixture('B')]);
     const mcp = registry(root(), { a: { transport: 'http', url: a.url }, b: { transport: 'http', url: b.url } });

@@ -11,7 +11,7 @@ const root = path.resolve(process.env.VIBE_SMOKE_WORKSPACE || '.vibe/desktop-smo
 fs.mkdirSync(root, { recursive: true });
 fs.mkdirSync(path.join(root, '.vibe'), { recursive: true });
 fs.writeFileSync(path.join(root, '.vibe', 'config.json'), JSON.stringify({ useWorktrees: false }));
-app.setPath('userData', root);
+const smokeUserData=root+'-userdata';fs.mkdirSync(smokeUserData,{recursive:true});app.setPath('userData',smokeUserData);
 process.env.VIBE_WORKSPACE = root;
 process.env.VIBE_SMOKE_TEST = '1';
 process.env.VIBE_API_KEY = '';
@@ -51,7 +51,7 @@ const model = http.createServer((req, res) => {
       if (['smoke-review-page', 'smoke-audit-page'].includes(user)) {
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ verdict: 'PASS', findings: [], evidence: ['read_file smoke-teamwork.html'] }) } }] }) + '\n\ndata: [DONE]\n\n'); return;
       }
-      assert(tools.every(tool => JSON.parse(tool.content).ok));
+      assert(tools.every(tool => JSON.parse(tool.content).ok),tools.map(tool=>tool.content).join('\n'));
       if (!['smoke-create-page','smoke-style-page'].includes(user)) assert(tools.some(tool => tool.content.includes('alo alo')));
       res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'Verified smoke page' } }] }) + '\n\ndata: [DONE]\n\n'); return;
     }
@@ -99,7 +99,7 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.getElementById('team-dialog').close();`);
       await win.webContents.executeJavaScript(`document.getElementById('settings-button').click();document.getElementById('base-url').value='http://127.0.0.1:${port}/v1';document.getElementById('model-input').value='smoke-model';document.getElementById('api-key').value='smoke-private-key';document.getElementById('context-window').value=16384;document.getElementById('output-tokens').value=2048;document.getElementById('settings-form').requestSubmit();`);
       await wait(win, `!document.getElementById('settings-dialog').open && document.getElementById('model-name').textContent === 'smoke-model'`);
-      const saved = fs.readFileSync(path.join(root, 'settings.json'), 'utf8'); assert(!saved.includes('smoke-private-key')); assert(saved.includes('encryptedKey'));
+      const saved = fs.readFileSync(path.join(smokeUserData, 'settings.json'), 'utf8'); assert(!saved.includes('smoke-private-key')); assert(saved.includes('encryptedKey'));
       await win.webContents.executeJavaScript(`document.getElementById('fetch-models').click();`);
       await wait(win, `document.querySelectorAll('#available-models option').length===2`);
       await win.webContents.executeJavaScript(`document.getElementById('prompt').value='Kiểm tra desktop';document.getElementById('composer').requestSubmit();`);
@@ -175,9 +175,27 @@ app.on('browser-window-created', (_, win) => {
       assert(await win.webContents.executeJavaScript(`document.getElementById('sidebar').classList.contains('mobile-open')`));
       await win.webContents.executeJavaScript(`document.getElementById('toggle-sidebar').click();`);
       win.setSize(1320, 900);
+      win.setSize(1400,900);
+      await win.webContents.executeJavaScript(`document.getElementById('workbench-button').click()`);
+      await wait(win, `document.querySelectorAll('.wb-section').length>=5`);
+      assert(await win.webContents.executeJavaScript(`document.querySelectorAll('.wb-checkpoint').length>=2`));
+      await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll('.wb-checkpoint')).find(b=>b.textContent.includes('write_file')).click()`);
+      await wait(win, `document.querySelector('#wb-checkpoint-detail input[type=checkbox]')!==null`);
+      await win.webContents.executeJavaScript(`{const section=Array.from(document.querySelectorAll('.wb-section')).find(s=>s.querySelector('h3').textContent.includes('Ngân sách mỗi'));const inputs=section.querySelectorAll('input');inputs[0].value='500000';inputs[3].value='2';inputs[4].value='5';section.querySelector('form').requestSubmit();}`);
+      await wait(win, `document.getElementById('toast').textContent.includes('Đã lưu ngân sách')`);
+      const savedBudget=JSON.parse(fs.readFileSync(path.join(root,'.vibe','config.json'),'utf8'));assert.equal(savedBudget.runBudget.maxTokens,500000);assert(Object.values(savedBudget.modelRates).some(rate=>rate.inputPerMillion===2&&rate.outputPerMillion===5));
+      await win.webContents.executeJavaScript(`document.querySelector('#wb-content textarea').value='Keep the acceptance test';document.querySelector('#wb-content form').requestSubmit()`);
+      await wait(win, `document.getElementById('wb-content').textContent.includes('Ghi nhớ ·')`);
+      await win.webContents.executeJavaScript(`document.getElementById('workbench-dialog').close()`);
+      fs.writeFileSync(path.join(root,'preview-smoke.html'),'<html><head><title>Live preview</title></head><body><h1>Preview works</h1><script>console.log("preview-smoke-ok");throw new Error("preview-smoke-error")</script></body></html>');
+      await win.webContents.executeJavaScript(`document.getElementById('preview-button').click();document.getElementById('preview-entry').value='preview-smoke.html';document.getElementById('preview-form').requestSubmit()`);
+      await wait(win, `document.getElementById('preview-console').textContent.includes('preview-smoke-ok') && document.getElementById('preview-console').textContent.includes('preview-smoke-error')`);
+      fs.writeFileSync(path.join(root,'preview-smoke.html'),'<html><head><title>Live preview update</title></head><body><script>console.log("preview-reloaded-ok")</script></body></html>');
+      await wait(win, `document.getElementById('preview-console').textContent.includes('preview-reloaded-ok')`);
+      await win.webContents.executeJavaScript(`document.getElementById('preview-close').click()`);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
-      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['planner repairs malformed output with retained context', 'desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout'], bounds }, null, 2));
+      fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['planner repairs malformed output with retained context', 'desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout', 'workbench checkpoint diff and context pins', 'budget configuration with model prices', 'isolated web preview and console errors', 'automatic web file refresh'], bounds }, null, 2));
       clearTimeout(timer); model.close(); app.quit();
     } catch (error) { fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: false, error: String(error) })); clearTimeout(timer); model.close(); app.exit(1); }
   });

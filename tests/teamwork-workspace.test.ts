@@ -31,6 +31,27 @@ function runner(root: string, plan: any[], reply: (messages: Message[]) => Promi
   return { team: new Teamwork(config, store, client, new ModelRouter(config), async () => false), store };
 }
 describe('Teamwork workspace mode', () => {
+  it('resumes an interrupted DAG without replanning or rewriting a completed producer', async () => {
+    const dir = root(); let writes = 0, checks = 0;
+    const { team } = runner(dir, [
+      { id: 'code', role: 'coder', title: 'Produce once', description: 'produce-once', expectedFiles: ['a.txt'] },
+      { id: 'check', role: 'tester', title: 'Check later', description: 'verify-once', dependencies: ['code'] }
+    ], async messages => {
+      const task = messages.findLast(message => message.role === 'user')?.content;
+      const outcomes = messages.filter(message => message.role === 'tool');
+      if (!outcomes.length) {
+        if (task === 'produce-once') { writes++; return { content: '', toolCalls: [{ id: 'write', type: 'function', function: { name: 'write_file', arguments: '{"path":"a.txt","content":"produced"}' } }] }; }
+        checks++; return { content: '', toolCalls: [{ id: 'read', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.txt"}' } }] };
+      }
+      return { content: 'done', toolCalls: [] };
+    });
+    const first = await team.run('Resume completed producer safely', event => { if (typeof event !== 'string' && event.type === 'task_complete' && event.taskId === 'code') team.stop(); });
+    expect(first.status).toBe('cancelled'); expect(checks).toBe(0);
+    const events: any[] = [], second = await team.resume(first.id, event => events.push(event));
+    expect(second.id).toBe(first.id); expect(second.status).toBe('completed'); expect(writes).toBe(1); expect(checks).toBe(1);
+    expect(events.some(event => event.type === 'planner_start')).toBe(false);
+    expect(second.tasks.every(task => task.status === 'completed')).toBe(true);
+  });
   it('keeps an independent branch running after a producer exhausts stream recovery', async () => {
     const dir = root(); let failedAttempts = 0;
     const { team } = runner(dir, [

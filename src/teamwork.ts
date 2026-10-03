@@ -21,6 +21,9 @@ import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, v
 import { scheduleRepairs } from './team-repair.js';
 import { Pipeline } from './pipeline.js';
 import { planObject, validatedPlan } from './plan-recovery.js';
+import { durableJson } from './checkpoints.js';
+import { RunJournal } from './run-journal.js';
+import { BudgetTracker } from './budgets.js';
 
 export function parseTeamPlan(raw: string): Task[] {
   // Routers/models sometimes emit a scalar for a one-item list. Preserve the
@@ -66,7 +69,13 @@ export class Teamwork {
     return parseTeamPlan(raw);
   }
 
-  async run(goal: string, onEvent: (event: TeamworkEvent | string) => void = console.log) {
+  async resume(sessionId: string, onEvent: (event: TeamworkEvent | string) => void = console.log) {
+    if (!/^session-[a-f0-9]{8}$/.test(sessionId)) throw new Error('Invalid Teamwork session ID');
+    const saved = JSON.parse(fs.readFileSync(path.join(this.c.workspace, '.vibe', 'sessions', sessionId, 'resume.json'), 'utf8'));
+    if (saved.status === 'completed') throw new Error('Teamwork session already completed');
+    return this.run(saved.goal, onEvent, sessionId);
+  }
+  async run(goal: string, onEvent: (event: TeamworkEvent | string) => void = console.log, resumeId?: string) {
     const workspace = path.resolve(this.c.workspace).toLowerCase();
     if (this.running || Teamwork.activeWorkspaces.has(workspace)) throw new Error('Teamwork đang chạy trong workspace này. Dừng hoặc đợi phiên hiện tại kết thúc.');
     this.running = true;
@@ -75,13 +84,14 @@ export class Teamwork {
     this.internalFailure = false;
     this.tasks = [];
     this.agents.clear();
-    try { return await this.runSession(goal, onEvent); }
+    try { return await this.runSession(goal, onEvent, resumeId); }
     finally { this.running = false; Teamwork.activeWorkspaces.delete(workspace); }
   }
 
   private async runSession(
     goal: string,
-    onEvent: (event: TeamworkEvent | string) => void = console.log
+    onEvent: (event: TeamworkEvent | string) => void = console.log,
+    resumeId?: string
   ) {
     let eventLog: EventLog | undefined;
     const emit = (event: TeamworkEvent) => {
@@ -97,7 +107,7 @@ export class Teamwork {
       }
     };
 
-    const id = `session-${crypto.randomBytes(4).toString('hex')}`;
+    const id = resumeId || `session-${crypto.randomBytes(4).toString('hex')}`;
     const root = path.join(this.c.workspace, '.vibe');
     fs.mkdirSync(root, { recursive: true });
     const log = new EventLog(root, id);
@@ -105,13 +115,30 @@ export class Teamwork {
     const sessionRoot = path.join(root, 'sessions', id);
     fs.mkdirSync(sessionRoot, { recursive: true });
     fs.writeFileSync(path.join(sessionRoot, 'ORIGINAL_REQUEST.md'), `# Original request\n\n${goal}\n`);
-    const evidence = new Map<string, TaskEvidence>();
+    const resumeFile = path.join(sessionRoot, 'resume.json');
+    const resumed = resumeId ? JSON.parse(fs.readFileSync(resumeFile, 'utf8')) as { goal: string; planRaw: string; tasks: Task[]; evidence: [string, TaskEvidence][]; fingerprints?: Record<string, Record<string, string | null>>; repairRounds: number; status: string } : undefined;
+    const fingerprints = resumed?.fingerprints || {};
+    const evidence = new Map<string, TaskEvidence>(resumed?.evidence || []);
     const pipeline = new Pipeline(sessionRoot, id, this.c.maxAgents);
-    let repairRounds = 0;
+    let repairRounds = resumed?.repairRounds || 0;
+    const teamBudget = new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates });
     this.db.session(id, 'running', this.c.model, goal);
     try {
     const worktrees = new Worktrees(this.c.workspace, root);
     let implementationWorkspace: Promise<{ dir: string; branch: string }> | undefined;
+    if (resumed) {
+      this.tasks = resumed.tasks;
+      assertDag(this.tasks);
+      for (const task of this.tasks) {
+        const proof = evidence.get(task.id);
+        if (task.status === 'completed') {
+          if ((task.role === 'coder' && (!Object.keys(fingerprints[task.id] || {}).length || staleEvidence({ files: fingerprints[task.id] } as TaskEvidence))) || (proof && staleEvidence(proof))) throw new Error(`Resume requires source verification: completed task ${task.id} has missing or changed file fingerprints. Start a fresh plan to protect user edits.`);
+        } else { task.status = 'pending'; delete task.error; delete task.startedAt; delete task.completedAt; }
+      }
+      const scopes = [...new Set(this.tasks.map(task => task.worktreePath).filter(Boolean))];
+      if (scopes.length > 1 || scopes.some(scope => !fs.existsSync(scope!))) throw new Error('Resume worktree is missing or ambiguous');
+      if (scopes.length) implementationWorkspace = Promise.resolve({ dir: scopes[0]!, branch: '' });
+    }
     let git;
     try { git = await worktrees.inspect(); }
     catch (error) { this.db.session(id, 'failed', this.c.model); throw error; }
@@ -130,6 +157,8 @@ export class Teamwork {
     if (!isolated) emit({ type: 'agent_status', workspaceMode, message: 'Teamwork làm trong thư mục dự án. Các tác vụ độc lập chạy đồng thời và lấp slot ngay khi agent kết thúc. Worker có quyền ghi tệp riêng; kiểm tra/review chạy song song khi nguồn ổn định.' });
 
     const library = new SkillLibrary(this.c.workspace);
+    let planRaw = resumed?.planRaw || '';
+    if (!resumed) {
     const baseTools = new Tools(this.c.workspace, this.approve, 'planner', library);
     const plannerId = 'agent-plan-01';
     const namedPlanner = this.c.namedAgents?.find(agent => agent.enabled && agent.role === 'planner');
@@ -151,7 +180,6 @@ export class Teamwork {
       timestamp: new Date().toISOString(),
     });
 
-    let planRaw: string;
     const plannerState = newConversation();
     try {
       const planned = await validatedPlan(async (attempt, feedback) => {
@@ -159,7 +187,7 @@ export class Teamwork {
           attempt ? feedback :
         `Workspace mode: ${workspaceMode}; Git state: ${git.reason}. In shared-folder mode use project files directly; do not require Git commands. Inspect workspace and plan this goal: ${goal}. Return ONLY JSON {"summary":"...","tasks":[{"id":"T1","title":"...","description":"...","role":"coder","dependencies":[],"expectedFiles":[],"skills":[]}]} Available named agents (use agentId with matching role, prefer these when enabled): ${JSON.stringify(this.c.namedAgents?.filter(agent => agent.enabled).map(({ id, name, role }) => ({ id, name, role })) || [])}. Allowed roles: ${JSON.stringify(roleCatalog)}. For code changes first survey/specify as needed, assign non-overlapping exact expectedFiles to each implementation or test-writer task, then executed tester checks, independent reviewer, and challenger/auditor for security-sensitive or substantial changes. Use specialized named agents with matching roles; do not assign test writing to a tester (it cannot write). Every implementation must have dependent testing and review. All implementation tasks share one session worktree. Parallel workers must declare disjoint exact expectedFiles. Build a fan-out/fan-in DAG: run independent exploration/specification and implementation branches concurrently; sibling tests, reviews and challenges should depend on the shared implementation, not on each other unless they truly consume their outputs. Do not invent sequential dependencies just to order phases. Test-writing and implementation should be sibling coder tasks after a shared specification contract, not a test-writer-then-all-workers chain unless workers actually consume generated test output. Substantial goals should have at least two useful independent implementation tasks with disjoint files when the architecture permits. The scheduler continuously fills free slots across phases as soon as actual dependencies finish. Validators run concurrently on a stable source; repairs wait for them to drain. Return phase, acceptanceCriteria and verificationCommands for each task. List fields must use JSON arrays: acceptanceCriteria:["A complete criterion may be longer than 30 characters"], verificationCommands:["npm test"], dependencies:[], expectedFiles:[], skills:[]. Allowed phases: survey, specification, test_design, implementation, verification, review, challenge, audit, acceptance. For substantial project changes include specification, test writing, implementation, execution checks, all relevant independent reviewers, challenger, forensic auditor and a final fresh victory-auditor. Auditor must depend on reviews/challenges and implementations; acceptance must follow audit. Keep greetings and small tasks proportional. Every gate task reports JSON verdict PASS/FAIL/UNVERIFIED with findings and five handoff components. Explicit verificationCommands must actually execute through tools. Only coder and tester tasks can execute commands in Teamwork. Survey/specification/planner, orchestrator, reviewer, judge and general tasks MUST have verificationCommands:[]; assign their runtime checks to coder/tester dependencies instead. Read-only reviewers inspect actual files and recorded tester evidence. Do not use echo/console.log success messages as acceptance tests. Use only commands appropriate for the actual project: npm test requires a package.json test script; static sites can use an explicitly created Node test script. For greetings/questions use a general task to answer directly; do not invent a website or code requirement. Relevant skills (use search_skills for more; select exact IDs, never invent): ${JSON.stringify(library.search(goal).slice(0, 16).map(({ id, name, description }) => ({ id, name, description: description.slice(0, 160) })))}`,
         this.abort.signal, undefined, [], {
-          state: plannerState, recall: (query, limit, beforeId) => this.db.recall(`${id}:planner`, query, limit, beforeId), namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal,
+          state: plannerState, journal: new RunJournal(this.c.workspace, `${id}:planner`), budgetTracker: new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates, agentId: plannerId }), onBudget: budget => emit({ type: 'agent_status', agentId: plannerId, sessionId: id, step: 'budget', budget }), recall: (query, limit, beforeId) => this.db.recall(`${id}:planner`, query, limit, beforeId), namedAgentId: namedPlanner?.id, agentConfig: this.c, skillTask: goal,
           onModel: model => {
             plannerModel = model;
             this.agents.set(plannerId, { role: 'planner', status: 'running', model });
@@ -214,9 +242,10 @@ export class Teamwork {
       throw e;
     }
 
+    }
     this.tasks.forEach(t => this.db.task(id, t));
     let lastSnapshot = 0;
-    const snapshot = () => { lastSnapshot = Date.now(); emit({ type: 'task_snapshot', pipeline: pipeline.snapshot(this.tasks, evidence), sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() }); };
+    const snapshot = (status = 'running') => { lastSnapshot = Date.now(); durableJson(resumeFile, { version: 1, goal, planRaw, tasks: this.tasks, evidence: [...evidence], fingerprints, repairRounds, status }); emit({ type: 'task_snapshot', pipeline: pipeline.snapshot(this.tasks, evidence), sessionId: id, maxAgents: this.c.maxAgents, tasks: this.tasks.map(task => ({ ...task, phase: taskPhase(task), waitReason: waitingReason(task, this.tasks, this.c.maxAgents) })), timestamp: new Date().toISOString() }); };
     snapshot();
     fs.mkdirSync(path.join(root, 'sessions', id), { recursive: true });
     fs.writeFileSync(path.join(root, 'sessions', id, 'plan.md'), planRaw);
@@ -319,16 +348,20 @@ export class Teamwork {
             let step = 'Starting agent';
             const progress = () => writeAgentArtifact(sessionRoot, aid, 'progress.md', `# Progress\n\nStatus: RUNNING\nPhase: ${taskPhase(t)}\nTask: ${t.id}\nAttempt: ${t.retries || 0}\nLast heartbeat: ${new Date().toISOString()}\nCurrent step: ${step}\n`);
             heartbeat = setInterval(() => { try { progress(); if (Date.now() - lastSnapshot >= 1000) snapshot(); } catch { /* The next durable checkpoint reports write failures. */ } }, 10000);
-            const taskEvidence: TaskEvidence = { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
+            const taskEvidence: TaskEvidence = resumed && evidence.get(t.id) ? evidence.get(t.id)! : { inspected: false, successfulChecks: 0, failedChecks: 0, toolErrors: 0 };
             if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t))) taskEvidence.files = dependencyFingerprints(t, this.tasks, scope);
             evidence.set(t.id, taskEvidence);
             const calls = new Map<string, string>();
             const agent = new Agent(aid, t.role, scope, this.client, this.router, new Tools(scope, this.approve, t.role, library, t.role === 'coder' ? t.expectedFiles : undefined, t.role === 'general'), log);
             const memoryKey = `${id}:${t.id}:attempt-${t.retries || 0}`;
-            const state = newConversation(taskHandoff(goal, t, this.tasks, Math.floor((this.c.contextWindow || 32768) / 5), taskPhase(t) === 'audit'));
+            const journal = new RunJournal(this.c.workspace, memoryKey);
+            const resumeTask = !!resumed && journal.status().resumable;
+            const state = resumeTask ? this.db.conversation(memoryKey) : newConversation(taskHandoff(goal, t, this.tasks, Math.floor((this.c.contextWindow || 1048576) / 5), taskPhase(t) === 'audit'));
+            const sessionMemory = this.db.conversation(id); state.pins = sessionMemory.pins; state.attachments = sessionMemory.attachments;
             state.messages.push({ role: 'user', content: dispatch });
             t.resultSummary = await agent.run(t.description, this.abort.signal, undefined, [], {
               state,
+              journal, resume: resumeTask, budgetTracker: new BudgetTracker({ budget: this.c.runBudget, rates: this.c.modelRates, agentId: aid, taskId: t.id }), onBudget: budget => emit({ type: 'agent_status', agentId: aid, taskId: t.id, sessionId: id, step: 'budget', budget }),
               readOnlyTask: t.role === 'general',
               skills: t.skills,
               namedAgentId: assigned?.id,
@@ -347,6 +380,7 @@ export class Teamwork {
               },
               onItem: item => {
                 this.db.archiveItem(memoryKey, item); recordEvidence(taskEvidence, item, calls);
+                if (t.role === 'coder' && item.role === 'tool') fingerprints[t.id] = dependencyFingerprints(t, this.tasks, scope);
                 if (item.role === 'tool') pipeline.tool();
                 if (Date.now() - lastSnapshot >= 1000) snapshot();
                 step = item.tool_calls?.map(call => call.function.name).join(', ') || (item.role === 'tool' ? `Finished ${calls.get(item.tool_call_id || '') || 'tool'}` : item.role);
@@ -355,6 +389,10 @@ export class Teamwork {
               }
             });
             if (staleEvidence(taskEvidence)) throw new Error(`Integrity veto ${t.id}: validator changed assigned source files during verification`);
+            if (t.role === 'coder') {
+              fingerprints[t.id] = dependencyFingerprints(t, this.tasks, scope);
+              if (t.id.startsWith('repair-')) for (const dependency of t.dependencies) { const original = this.tasks.find(task => task.id === dependency); if (original?.role === 'coder') fingerprints[original.id] = dependencyFingerprints(original, this.tasks, scope); }
+            }
             if (['verification', 'review', 'challenge', 'audit', 'acceptance'].includes(taskPhase(t)) && (taskEvidence.failedChecks > 0 || reviewVerdict(t) === 'FAIL')) throw new Error(`Validation veto ${t.id}: ${t.resultSummary || 'executed check failed'}`);
             t.status = 'completed';
             t.completedAt = new Date().toISOString();
@@ -462,6 +500,7 @@ export class Teamwork {
     const failed = this.tasks.filter(t => t.status !== 'completed');
     const status = this.abort.signal.aborted ? 'cancelled' : failed.length ? 'failed' : 'completed';
     this.db.session(id, status, this.c.model, goal);
+    snapshot(status);
     for (const proof of evidence.values()) proof.stale = staleEvidence(proof);
     const gate = qualityGate(this.tasks, evidence);
     const rows = this.tasks.map(task => `| ${task.id} | ${taskPhase(task)} | ${task.status} | ${reviewVerdict(task)} | ${evidence.get(task.id)?.successfulChecks || 0} | ${evidence.get(task.id)?.stale ? 'STALE' : 'current'} |`).join('\n');
