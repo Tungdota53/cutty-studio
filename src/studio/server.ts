@@ -12,6 +12,7 @@ import { ModelRouter } from '../router.js';
 import { Tools, toolDefinitions } from '../tools.js';
 import { Agent } from '../agent.js';
 import { Teamwork } from '../teamwork.js';
+import { resolveTeamworkIntent } from './teamwork-intent.js';
 import { taskPhase } from '../team-protocol.js';
 import crypto from 'node:crypto';
 import { ConversationContext, contextLimits, inspectContext, addContextPin, removeContextPin, attachContextFile, removeContextAttachment } from '../conversation.js';
@@ -507,13 +508,14 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             });
           }
         } else if (msg.type === 'command' || msg.type === 'chat' || msg.type === 'resume_chat') {
-          const line = msg.type === 'resume_chat' ? /^session-[a-f0-9]{8}$/.test(String(msg.sessionId)) ? `/teamwork-resume ${msg.sessionId}` : 'Tiếp tục nhiệm vụ bị gián đoạn từ kết quả đã lưu. Kiểm tra trạng thái thao tác chưa rõ trước khi thay đổi tệp.' : (msg.prompt || msg.line || '').trim();
+          let line = msg.type === 'resume_chat' ? /^session-[a-f0-9]{8}$/.test(String(msg.sessionId)) ? `/teamwork-resume ${msg.sessionId}` : 'Tiếp tục nhiệm vụ bị gián đoạn từ kết quả đã lưu. Kiểm tra trạng thái thao tác chưa rõ trước khi thay đổi tệp.' : (msg.prompt || msg.line || '').trim();
           if (!line) return;
           if (busy || integrationBusy) { ws.send(JSON.stringify({ type: 'error', message: 'Một tác vụ đang chạy.' })); return; }
           busy = true;
           activeAbort = new AbortController();
           broadcast({ type: 'run_start' });
           try {
+          line = resolveTeamworkIntent(line, msg.sessionId);
           if(c.autoIntegrations!==false&&msg.type!=='resume_chat'&&(!line.startsWith('/')||line.startsWith('/teamwork '))){
             const fingerprint=integrationSignature(integrations.scan(line));
             if(fingerprint!==integrationFingerprint){
@@ -545,7 +547,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               activeTeam = tw;
               broadcast({
                 type: 'terminal_log',
-                text: `[Teamwork] Khởi chạy tối đa ${c.maxAgents} agents cho mục tiêu: ${arg}`,
+                text: cmd === 'teamwork-resume' ? `[Teamwork] Khôi phục phiên ${arg}: giữ kế hoạch cũ, kiểm tra checkpoint và chạy phần còn lại.` : `[Teamwork] Khởi chạy tối đa ${c.maxAgents} agents cho mục tiêu: ${arg}`,
               });
 
               const onTeamEvent = (ev: any) => {

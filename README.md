@@ -13,6 +13,7 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 - Chọn thư mục dự án, tạo chat và mở lại lịch sử đã lưu.
 - Nhận phản hồi trực tiếp khi AI đang trả lời; dừng tác vụ ngay trên giao diện.
 - Theo dõi tiến độ ngay trong chat: công cụ đang chạy, bước đã xong và lỗi cần xử lý; mở lại phiên để xem các mốc đã lưu.
+- Trong phiên Teamwork cũ, gõ “tiếp tục” để khôi phục kế hoạch và checkpoint, giữ kết quả hợp lệ và chạy phần còn lại. App không gọi planner tạo kế hoạch mới; nếu chưa chọn phiên hoặc nguồn đã thay đổi, app báo nguyên nhân cần xử lý.
 - Sơ đồ phân biệt heartbeat và tiến độ thực tế, hiển thị thời điểm cập nhật gần nhất và cảnh báo khi chưa có kết quả mới sau 90 giây. Lệnh shell quá 2 phút, bộ kiểm thử quá 5 phút hoặc thao tác Git quá 30 giây sẽ dừng cây tiến trình được app khởi tạo; giữ checkpoint để kiểm tra thay đổi trước khi thử lại.
 - Câu trả lời có tiêu đề, danh sách, bảng, màu code và hiệu ứng streaming; sao chép toàn bộ câu trả lời hoặc từng khối code.
 - Đọc, tìm kiếm và chỉnh sửa tệp, xem Git diff, chạy lệnh và kiểm thử theo quyền của agent.

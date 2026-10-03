@@ -229,9 +229,9 @@ $('composer').onsubmit = event => {
   event.preventDefault(); const prompt = $('prompt').value.trim(); if (!prompt || busy) return;
   if (!config?.apiKey) { $('settings-status').textContent = 'Nhập khóa API để bắt đầu.'; $('settings-dialog').showModal(); return; }
   const teamwork = $('mode').value === 'teamwork';
-  if (!currentSession || !currentSession.startsWith('chat-')) currentSession = `chat-${crypto.randomUUID()}`;
+  if (!currentSession) currentSession = `chat-${crypto.randomUUID()}`;
   if (!send({ type: 'chat', prompt: teamwork ? `/teamwork ${prompt}` : prompt, sessionId: currentSession, agentId: teamwork ? undefined : $('chat-agent').value || undefined })) return;
-  setBusy(true); resetProgress(); assistant = null; response = ''; addMessage('user', prompt); progress({id:'run-request',message: teamwork ? 'Đang lập kế hoạch cho nhóm agent…' : 'Đã nhận yêu cầu · đang kết nối model…',status:'running'}); $('chat-title').textContent = prompt.slice(0, 80); $('prompt').value = ''; $('prompt').style.height = '';
+  setBusy(true); resetProgress(); assistant = null; response = ''; addMessage('user', prompt); progress({id:'run-request',message: teamwork ? 'Đang xử lý yêu cầu cho nhóm agent…' : 'Đã nhận yêu cầu · đang kết nối model…',status:'running'}); $('chat-title').textContent = prompt.slice(0, 80); $('prompt').value = ''; $('prompt').style.height = '';
 };
 $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
 $('prompt').oninput = () => { $('prompt').style.height = 'auto'; $('prompt').style.height = `${Math.min(180, $('prompt').scrollHeight)}px`; };

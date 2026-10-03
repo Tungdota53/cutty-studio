@@ -9,6 +9,8 @@ import { Store } from '../src/db.js';
 import { CheckpointStore } from '../src/checkpoints.js';
 import { McpRegistry } from '../src/mcp.js';
 import { ProjectIntegrations } from '../src/project-integrations.js';
+import { ModelClient } from '../src/model.js';
+import { parseTeamPlan } from '../src/teamwork.js';
 
 const roots: string[] = [], studios: StudioServerInstance[] = [], sockets: Socket[] = [], servers: http.Server[] = [];
 class Socket {
@@ -63,6 +65,33 @@ async function harness(configuration: Record<string, unknown> = {}, prepare?: (r
 }
 
 describe('Studio workbench WebSocket APIs', () => {
+  it('releases the busy state when continuation has no selected Teamwork session', async () => {
+    const chat = vi.spyOn(ModelClient.prototype, 'chat');
+    const { socket } = await harness();
+    await socket.request({ type: 'chat', prompt: '/teamwork tiếp tục', sessionId: 'chat-one' }, 'run_end');
+    const error = await socket.wait('stream_chunk');
+    expect(error.token).toContain('không lập kế hoạch mới'); expect(chat).not.toHaveBeenCalled();
+    await socket.request({ type: 'chat', prompt: '/teamwork tiếp tục', sessionId: 'chat-one' }, 'run_end');
+  });
+  it('resumes the selected old DAG when chat sends /teamwork tiếp tục without invoking the planner', async () => {
+    vi.stubEnv('VIBE_API_KEY', 'fixture-only-key');
+    vi.spyOn(ModelClient.prototype, 'modelLimits').mockResolvedValue(undefined);
+    const chat = vi.spyOn(ModelClient.prototype, 'chat').mockResolvedValue({ content: 'continued pending task', toolCalls: [], model: 'test-model' });
+    const id = 'session-aabbccdd';
+    const { root, socket } = await harness({ autoIntegrations: false, useWorktrees: false }, root => {
+      const tasks = parseTeamPlan(JSON.stringify({ tasks: [{ id: 'done', role: 'general', title: 'Done', description: 'do-not-repeat' }, { id: 'pending', role: 'general', title: 'Remaining', description: 'finish-pending', dependencies: ['done'] }] }));
+      tasks[0].status = 'completed'; tasks[0].resultSummary = 'already completed';
+      const directory = path.join(root, '.vibe', 'sessions', id); fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, 'resume.json'), JSON.stringify({ goal: 'Original goal', planRaw: '{"tasks":[]}', tasks, evidence: [], fingerprints: {}, repairRounds: 0, status: 'cancelled' }));
+    });
+    await socket.request({ type: 'chat', prompt: '/teamwork tiếp tục', sessionId: id }, 'run_end');
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat.mock.calls[0][0].findLast(item => item.role === 'user')?.content).toBe('finish-pending');
+    const saved = JSON.parse(fs.readFileSync(path.join(root, '.vibe', 'sessions', id, 'resume.json'), 'utf8'));
+    expect(saved.tasks.find((task: any) => task.id === 'done').resultSummary).toBe('already completed');
+    expect(saved.tasks.find((task: any) => task.id === 'pending').status).toBe('completed');
+    expect(fs.readdirSync(path.join(root, '.vibe', 'sessions'))).toEqual([id]);
+  });
   it('runs setup before work and reuses the project signature on the next request',async()=>{
     const sync=vi.spyOn(ProjectIntegrations.prototype,'sync').mockImplementation(async(c)=>({config:c,report:{project:{},skills:[],mcp:[],results:[],connections:[]}}));
     const {socket}=await harness();await socket.request({type:'configure_integrations',enabled:true},'integration_state');

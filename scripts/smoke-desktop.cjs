@@ -173,6 +173,12 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);
       await win.webContents.executeJavaScript(`document.querySelector('#history button[title*="smoke-teamwork-page"]').click();`);
       await wait(win, `document.querySelectorAll('.agent-node.completed').length===5 && document.getElementById('map-gate').textContent==='PASS' && document.getElementById('map-session-label').textContent==='Phiên Teamwork'`);
+      const plannerCountBeforeContinue = requests.filter(request => request.messages[0]?.content?.includes('You are Vibe planner')).length;
+      await win.webContents.executeJavaScript(`window.__continuationPayload=null;window.__originalSocketSend=WebSocket.prototype.send;WebSocket.prototype.send=function(data){const payload=JSON.parse(data);if(payload.type==='chat')window.__continuationPayload=payload;return window.__originalSocketSend.call(this,data);};document.getElementById('mode').value='teamwork';document.getElementById('prompt').value='tiếp tục';document.getElementById('composer').requestSubmit();`);
+      await wait(win, `document.getElementById('stop-button').hidden && document.getElementById('messages').textContent.includes('Teamwork session already completed')`);
+      assert(await win.webContents.executeJavaScript(`window.__continuationPayload.sessionId.startsWith('session-')`));
+      assert.equal(requests.filter(request => request.messages[0]?.content?.includes('You are Vibe planner')).length, plannerCountBeforeContinue);
+      await win.webContents.executeJavaScript(`WebSocket.prototype.send=window.__originalSocketSend;void 0;`);
       // History restores task states and the actual persisted acceptance verdict.
       win.setMinimumSize(480, 600); win.setSize(620, 780);
       await new Promise(resolve => setTimeout(resolve, 250));
