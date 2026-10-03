@@ -507,7 +507,7 @@ export class Teamwork {
         if (repair) {
           repairRounds++;
           pipeline.repair(repairRounds, repair.id, findings.map(failure => `${failure.task.id}: ${failure.reason.slice(0, 500)}`));
-          for (const task of this.tasks) { if (task.status === 'pending') evidence.delete(task.id); this.db.task(id, task); }
+          for (const task of this.tasks) { if (task.status === 'pending' && task.dependencies.includes(repair.id)) evidence.delete(task.id); this.db.task(id, task); }
           log.emit('repair_scheduled', { round: repairRounds, repairId: repair.id, findings: findings.map(failure => ({ taskId: failure.task.id, reason: failure.reason })) });
           emit({ type: 'agent_status', taskId: repair.id, status: 'pending', message: `Tự sửa vòng ${repairRounds}: gom ${findings.length} lỗi từ ${findings.map(failure => failure.task.id).join(', ')}; chạy lại toàn bộ tác vụ phụ thuộc bị ảnh hưởng.` });
         }
