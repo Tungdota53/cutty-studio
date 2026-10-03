@@ -1,0 +1,15 @@
+import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';import assert from 'node:assert/strict';import {fork} from 'node:child_process';import {WebSocket} from 'ws';
+const runtime=path.resolve('release/win-unpacked/resources/runtime'),workspace=path.resolve('.vibe/packaged-auto-fixture'),token=crypto.randomBytes(24).toString('hex');fs.mkdirSync(workspace,{recursive:true});fs.writeFileSync(path.join(workspace,'package.json'),JSON.stringify({private:true,dependencies:{react:'*',vite:'*'}}));
+const original=fs.readFileSync(path.join(workspace,'package.json'),'utf8');
+const child=fork(path.join(runtime,'desktop-host.mjs'),[],{execPath:path.join(runtime,'node.exe'),cwd:workspace,windowsHide:true,stdio:['ignore','ignore','pipe','ipc'],env:{...process.env,VIBE_WORKSPACE:workspace,VIBE_DESKTOP_TOKEN:token,VIBE_API_KEY:'',VIBE_AUTO_INTEGRATIONS:'0'}});let ws;const messages=[];let diagnostics='';child.stderr.on('data',data=>diagnostics=(diagnostics+String(data)).slice(-2000));
+async function event(type){for(let i=0;i<2400;i++){const index=messages.findIndex(x=>x.type===type);if(index>=0)return messages.splice(index,1)[0];if(child.exitCode!==null)throw new Error('Backend exit: '+diagnostics);await new Promise(r=>setTimeout(r,100));}throw new Error('Missing '+type);}
+try{
+  const url=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('Startup timeout')),15000);child.on('message',message=>{if(message.type==='ready'){clearTimeout(timer);resolve(message.url)}});child.once('error',reject)});
+  assert.equal((await fetch(url+'/integrations.js?token='+token)).status,200);
+  ws=new WebSocket(url.replace('http:','ws:')+'/?token='+token);ws.on('message',data=>messages.push(JSON.parse(String(data))));await event('init');
+  ws.send(JSON.stringify({type:'sync_integrations',task:'frontend website'}));
+  const state=await event('integration_state');assert(state.report.results.filter(x=>x.id.startsWith('workspace:auto/')).every(x=>['installed','cached'].includes(x.status)),JSON.stringify(state.report.results));
+  assert.equal(state.report.connections.length,2);assert(state.report.connections.every(x=>x.status==='connected'),JSON.stringify(state.report.connections));assert.equal(fs.readFileSync(path.join(workspace,'package.json'),'utf8'),original);
+  const config=JSON.parse(fs.readFileSync(path.join(workspace,'.vibe/config.json'),'utf8'));assert(config.agentProfiles.coder.skills.includes('builtin:scoped-implementation'));assert(config.mcpServers['auto-playwright'].command===path.join(runtime,'node.exe'));
+  console.log(JSON.stringify({status:'PASS',skills:state.report.results.filter(x=>x.id.startsWith('workspace:auto/')).map(x=>({id:x.id,status:x.status})),mcp:state.report.connections.map(x=>({id:x.id,status:x.status,tools:x.toolCount})),projectDependenciesUnchanged:true,builtinSkillsPreserved:true}));
+}finally{ws?.terminate();if(child.connected)child.send({type:'shutdown'});await new Promise(resolve=>{if(child.exitCode!==null)return resolve();child.once('exit',resolve);setTimeout(()=>{child.kill();resolve()},5000).unref()});}

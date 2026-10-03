@@ -173,6 +173,7 @@ function connect() {
   ws.onmessage = async ({ data }) => {
     let msg; try { msg = JSON.parse(data); } catch { return; }
     Workbench.event(msg);
+    ProjectSetup.event(msg);
     switch (msg.type) {
       case 'team_config': showTeam(msg); if (msg.saved) { $('team-status').textContent = 'Đã lưu phân vai cho dự án.'; toast('Đã lưu phân vai và skill.'); } break;
       case 'model_catalog': modelCapabilities = msg.capabilities || []; showContextCapability(); $('available-models').replaceChildren(); for (const id of msg.models || []) { const option=document.createElement('option'); option.value=id; $('available-models').append(option); } $('team-status').textContent='Đã lấy ' + (msg.models || []).length + ' model từ API.'; break;
@@ -429,4 +430,5 @@ $('mcp-form').onsubmit = event => {
   } catch (error) { $('mcp-status').textContent = error.message; }
 };
 Workbench.init({send,toast,config:()=>config,busy:()=>busy,session:()=>currentSession,ensureSession:()=>{if(!currentSession)currentSession=`chat-${crypto.randomUUID()}`;},resume:()=>{assistant=null;response='';send({type:'resume_chat',sessionId:currentSession});}});
+ProjectSetup.init({send});
 connect();

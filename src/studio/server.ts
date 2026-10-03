@@ -15,10 +15,11 @@ import { Teamwork } from '../teamwork.js';
 import { taskPhase } from '../team-protocol.js';
 import crypto from 'node:crypto';
 import { ConversationContext, contextLimits, inspectContext, addContextPin, removeContextPin, attachContextFile, removeContextAttachment } from '../conversation.js';
-import { CheckpointStore } from '../checkpoints.js';
+import { CheckpointStore, durableJson } from '../checkpoints.js';
 import { RunJournal } from '../run-journal.js';
 import { runBudgetSchema, modelRatesSchema } from '../budgets.js';
 import { WebPreview } from './preview.js';
+import { ProjectIntegrations } from '../project-integrations.js';
 import { systemPrompt } from '../prompts.js';
 import { roleCatalog, roleProfile, roles, teamSchema, assignedAgent, defaultAgents } from '../roles.js';
 import { SkillLibrary } from '../skills.js';
@@ -114,6 +115,11 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   let teamworkState: any = null;
   let busy = false;
   const skills = new SkillLibrary(c.workspace);
+  const integrations=new ProjectIntegrations(c.workspace);
+  let integrationFingerprint='';
+  const integrationSignature=(plan:any)=>JSON.stringify({project:plan.project,skills:plan.skills.slice(0,3).map((item:any)=>item.id),mcp:plan.mcp.map((item:any)=>item.id)});
+  let integrationBusy=false;
+  let integrationAbort:AbortController|undefined;
   const teamConfig = () => ({ roles: roles.map(role => ({ id: role, ...roleCatalog[role], ...roleProfile(role, c) })), namedAgents: c.namedAgents || [], presets: defaultAgents, skills: skills.list().map(({ file, ...skill }) => skill), maxAgents: c.maxAgents, maxAgentIterations: c.maxAgentIterations ?? 0, maxAgentToolCalls: c.maxAgentToolCalls ?? 0 });
   const token = typeof options === 'object' ? options.token : undefined;
 
@@ -214,7 +220,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         res.writeHead(401); res.end('Unauthorized'); return;
       }
 
-      if (['/app.css', '/app.js', '/team-map.js', '/chat.css', '/chat-output.js', '/workbench.js', '/workbench.css'].includes(pathname)) {
+      if (['/app.css', '/app.js', '/team-map.js', '/chat.css', '/chat-output.js', '/workbench.js', '/workbench.css', '/integrations.js'].includes(pathname)) {
         res.writeHead(200, { 'Content-Type': pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         res.end(fs.readFileSync(path.join(__dirname, 'public', pathname.slice(1))));
         return;
@@ -347,6 +353,14 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
       }
 
       try {
+        if(integrationBusy&&['configure','configure_team','configure_mcp','configure_budget','configure_integrations','restore_checkpoint'].includes(msg.type))throw new Error('Đang thiết lập tích hợp; đợi hoặc dừng trước khi đổi cấu hình.');
+        if(['get_integrations','sync_integrations','configure_integrations'].includes(msg.type)){
+          if(msg.type==='get_integrations'){let report=null;try{report=JSON.parse(fs.readFileSync(path.join(c.workspace,'.vibe','integrations','report.json'),'utf8'))}catch{}ws.send(JSON.stringify({type:'integration_state',enabled:c.autoIntegrations!==false,plan:integrations.scan(String(msg.task || '')),report}));return;}
+          if(busy||integrationBusy)throw new Error('Đợi tác vụ hiện tại hoàn tất trước khi thay tích hợp.');
+          if(msg.type==='configure_integrations'){if(typeof msg.enabled!=='boolean')throw new Error('Thiết lập không hợp lệ');const file=path.join(c.workspace,'.vibe','config.json');let saved={};try{saved=JSON.parse(fs.readFileSync(file,'utf8'))}catch{}durableJson(file,{...saved,autoIntegrations:msg.enabled});c={...c,autoIntegrations:msg.enabled};ws.send(JSON.stringify({type:'integration_state',enabled:msg.enabled,plan:integrations.scan()}));return;}
+          integrationBusy=true;integrationAbort=new AbortController();
+          try{const result=await integrations.sync(c,String(msg.task || ''),message=>ws.send(JSON.stringify({type:'integration_progress',message})),integrationAbort.signal);c=result.config;client=new ModelClient(c);router=new ModelRouter(c);integrationFingerprint=integrationSignature(result.report);ws.send(JSON.stringify({type:'integration_state',enabled:c.autoIntegrations!==false,plan:result.report,report:result.report}));broadcast({type:'team_config',...teamConfig()});broadcast({type:'mcp_status',servers:result.report.connections});}finally{integrationBusy=false;integrationAbort=undefined;}return;
+        }
         if (['get_workbench','pin_context','unpin_context','attach_context','detach_context','get_checkpoints','checkpoint_diff','restore_checkpoint','configure_budget','get_mcp_tools','start_preview','stop_preview'].includes(msg.type)) {
           const sessionId = String(msg.sessionId || '');
           if (msg.type === 'start_preview') { ws.send(JSON.stringify({type:'preview_ready',...await preview.start(c.workspace,String(msg.entry || 'index.html'),()=>broadcast({type:'preview_changed'}))})); return; }
@@ -423,6 +437,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         } else if (msg.type === 'search_skills') {
           ws.send(JSON.stringify({ type: 'skill_results', skills: skills.search(String(msg.query || '')).map(({ file, ...skill }) => skill) }));
         } else if (msg.type === 'stop') {
+          integrationAbort?.abort();
           activeAbort?.abort();
           activeTeam?.stop();
           for (const [id, pending] of pendingApprovals) {
@@ -494,11 +509,18 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         } else if (msg.type === 'command' || msg.type === 'chat' || msg.type === 'resume_chat') {
           const line = msg.type === 'resume_chat' ? /^session-[a-f0-9]{8}$/.test(String(msg.sessionId)) ? `/teamwork-resume ${msg.sessionId}` : 'Tiếp tục nhiệm vụ bị gián đoạn từ kết quả đã lưu. Kiểm tra trạng thái thao tác chưa rõ trước khi thay đổi tệp.' : (msg.prompt || msg.line || '').trim();
           if (!line) return;
-          if (busy) { ws.send(JSON.stringify({ type: 'error', message: 'Một tác vụ đang chạy.' })); return; }
+          if (busy || integrationBusy) { ws.send(JSON.stringify({ type: 'error', message: 'Một tác vụ đang chạy.' })); return; }
           busy = true;
           activeAbort = new AbortController();
           broadcast({ type: 'run_start' });
           try {
+          if(c.autoIntegrations!==false&&msg.type!=='resume_chat'&&(!line.startsWith('/')||line.startsWith('/teamwork '))){
+            const fingerprint=integrationSignature(integrations.scan(line));
+            if(fingerprint!==integrationFingerprint){
+              broadcast({type:'integration_progress',message:'Đang chọn MCP và skill theo dự án…'});
+              try{const result=await integrations.sync(c,line,message=>broadcast({type:'integration_progress',message}),activeAbort.signal);c=result.config;client=new ModelClient(c);router=new ModelRouter(c);integrationFingerprint=fingerprint;broadcast({type:'integration_state',enabled:true,plan:result.report,report:result.report});broadcast({type:'team_config',...teamConfig()});broadcast({type:'mcp_status',servers:result.report.connections});for(const entry of result.report.results)broadcast({type:'terminal_log',text:`[Tích hợp] ${entry.id}: ${entry.status} · ${entry.message}`});}catch(error){if(activeAbort.signal.aborted)throw error;broadcast({type:'terminal_log',text:'Không tải được tích hợp; tiếp tục bằng công cụ hiện có.'});}
+            }
+          }
 
           if (line.startsWith('/')) {
             const [cmd, ...parts] = line.slice(1).split(' ');

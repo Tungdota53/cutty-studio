@@ -8,6 +8,7 @@ import { startStudio, type StudioServerInstance } from '../src/studio/server.js'
 import { Store } from '../src/db.js';
 import { CheckpointStore } from '../src/checkpoints.js';
 import { McpRegistry } from '../src/mcp.js';
+import { ProjectIntegrations } from '../src/project-integrations.js';
 
 const roots: string[] = [], studios: StudioServerInstance[] = [], sockets: Socket[] = [], servers: http.Server[] = [];
 class Socket {
@@ -43,6 +44,7 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); })));
   roots.splice(0).forEach(root => fs.rmSync(root, { recursive: true, force: true }));
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 async function harness(configuration: Record<string, unknown> = {}, prepare?: (root: string) => void) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vibe-workbench-')); roots.push(root);
@@ -61,6 +63,18 @@ async function harness(configuration: Record<string, unknown> = {}, prepare?: (r
 }
 
 describe('Studio workbench WebSocket APIs', () => {
+  it('runs setup before work and reuses the project signature on the next request',async()=>{
+    const sync=vi.spyOn(ProjectIntegrations.prototype,'sync').mockImplementation(async(c)=>({config:c,report:{project:{},skills:[],mcp:[],results:[],connections:[]}}));
+    const {socket}=await harness();await socket.request({type:'configure_integrations',enabled:true},'integration_state');
+    await socket.request({type:'chat',prompt:'First task',sessionId:'chat-one'},'run_end');expect(sync).toHaveBeenCalledTimes(1);
+    await socket.request({type:'chat',prompt:'Second task',sessionId:'chat-one'},'run_end');expect(sync).toHaveBeenCalledTimes(1);
+  });
+  it('reports detected stack and persists the automatic integration switch',async()=>{
+    const {root,socket}=await harness({},root=>fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({dependencies:{react:'1'}})));
+    const initial=await socket.request({type:'get_integrations'},'integration_state');expect(initial.plan.project.web).toBe(true);expect(initial.plan.mcp.some((x:any)=>x.id==='auto-playwright')).toBe(true);
+    const changed=await socket.request({type:'configure_integrations',enabled:true},'integration_state');expect(changed.enabled).toBe(true);expect(JSON.parse(fs.readFileSync(path.join(root,'.vibe','config.json'),'utf8')).autoIntegrations).toBe(true);
+    const rejected=await socket.request({type:'configure_integrations',enabled:'yes'},'error');expect(rejected.message).toContain('không hợp lệ');
+  });
   it('persists pinned instructions and redacted attachment snapshots independently of live files', async () => {
     const { root, socket } = await harness({}, root => fs.writeFileSync(path.join(root, 'notes.txt'), 'Important design evidence\napi_key=attachment-private-secret'));
     const pinned = await socket.request({ type: 'pin_context', sessionId: 'chat-one', content: 'Use one model for every agent', label: 'Model choice' }, 'workbench_state');

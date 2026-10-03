@@ -38,7 +38,7 @@ export class SkillLibrary {
                 const metadata = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
                 const field = (name: string) => metadata?.[1].match(new RegExp(`^${name}:\\s*(.+)$`, 'm'))?.[1].trim().replace(/^['"]|['"]$/g, '');
                 let provenance: Skill['provenance'];
-                if (source === 'github') {
+                if (source === 'github' || (source === 'workspace' && id.startsWith('workspace:auto/'))) {
                   const manifest = JSON.parse(fs.readFileSync(path.join(folder, '.provenance.json'), 'utf8'));
                   const integrity = Boolean(manifest.files?.['SKILL.md'] && manifest.files?.['LICENSE.txt']) && Object.entries(manifest.files as Record<string, string>).every(([name, expected]) => crypto.createHash('sha256').update(fs.readFileSync(safePath(folder, name))).digest('hex') === expected);
                   provenance = { repository: manifest.repository, commit: manifest.commit, license: manifest.license, url: manifest.url, integrity, ...(typeof manifest.adaptation === 'string' ? { adaptation: manifest.adaptation } : {}), ...(Array.isArray(manifest.sourcePaths) && manifest.sourcePaths.every((item: unknown) => typeof item === 'string') ? { sourcePaths: manifest.sourcePaths } : {}) };
@@ -93,7 +93,7 @@ export class SkillLibrary {
   }
   select(role: Role, task: string, config?: Partial<Config>, explicit: string[] = [], catalog = this.list()) {
     const profile = roleProfile(role, config);
-    const selected = [...new Set([...profile.skills, ...explicit])].map(id => this.load(id, catalog));
+    const selected = [...new Set([...profile.skills, ...explicit])].map(id => this.load(id, catalog)).filter((skill,index,list)=>!list.slice(0,index).some(prior=>skill.provenance&&prior.provenance?.url===skill.provenance.url&&prior.provenance.commit===skill.provenance.commit));
     // Add relevant, pinned role recommendations without overflowing the prompt budget.
     if (profile.autoSkills) {
       const recommended = catalog.map(skill => ({ skill, score: recommendationScore(skill.id, role, task) }))

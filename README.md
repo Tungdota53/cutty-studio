@@ -63,6 +63,11 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 
 ### Kết nối nhiều MCP
 
+- Mục **Tích hợp dự án** nhận diện công nghệ từ manifest, đề xuất skill/MCP và tự thiết lập trước khi agent làm việc. Có thể bật/tắt, thiết lập ngay hoặc dừng tải.
+- Tải skill từ danh mục nguồn GitHub đã kiểm tra, cố định commit, xác minh checksum và giấy phép; tải cả tài nguyên và gán cho vai phù hợp. Cache đã xác minh được tái sử dụng.
+- Dự án web được chọn Playwright MCP; dự án có thư viện được chọn Context7. Playwright cài riêng trong `.vibe/integrations`, cố định phiên bản npm và bỏ install scripts; cần npm và trình duyệt trên máy.
+- Hiển thị kết quả tải và số công cụ thực sự kết nối. Server thiếu khóa, thiếu runtime hoặc lỗi mạng được báo riêng và không chặn agent dùng công cụ hiện có. Không tự thu thập mọi kho tùy ý hay gọi nguồn đó là có chứng chỉ.
+
 - Thêm nhiều server trong mục **MCP**, hỗ trợ Streamable HTTP và chương trình Stdio chạy trên máy.
 - Xem trạng thái kết nối và số công cụ của từng server; bật/tắt hoặc xóa từng cấu hình.
 - Agent tự thấy và gọi các công cụ được phép, với tên riêng theo server để tránh trùng.

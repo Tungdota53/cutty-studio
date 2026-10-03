@@ -14,6 +14,7 @@ fs.writeFileSync(path.join(root, '.vibe', 'config.json'), JSON.stringify({ useWo
 const smokeUserData=root+'-userdata';fs.mkdirSync(smokeUserData,{recursive:true});app.setPath('userData',smokeUserData);
 process.env.VIBE_WORKSPACE = root;
 process.env.VIBE_SMOKE_TEST = '1';
+process.env.VIBE_AUTO_INTEGRATIONS='0';
 process.env.VIBE_API_KEY = '';
 const requests = [];
 let plannerReplies = 0;
@@ -193,6 +194,14 @@ app.on('browser-window-created', (_, win) => {
       fs.writeFileSync(path.join(root,'preview-smoke.html'),'<html><head><title>Live preview update</title></head><body><script>console.log("preview-reloaded-ok")</script></body></html>');
       await wait(win, `document.getElementById('preview-console').textContent.includes('preview-reloaded-ok')`);
       await win.webContents.executeJavaScript(`document.getElementById('preview-close').click()`);
+      await win.webContents.executeJavaScript(`document.getElementById('integration-button').click()`);
+      await wait(win, `document.getElementById('integration-results').querySelectorAll('section').length>0`);
+      await win.webContents.executeJavaScript(`document.getElementById('integration-auto').click()`);
+      await wait(win, `document.getElementById('integration-auto').checked && !document.getElementById('integration-auto').disabled`);
+      await win.webContents.executeJavaScript(`document.getElementById('integration-auto').click()`);
+      await wait(win, `!document.getElementById('integration-auto').checked && !document.getElementById('integration-auto').disabled`);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(root,'.vibe','config.json'),'utf8')).autoIntegrations,false);
+      await win.webContents.executeJavaScript(`document.getElementById('integration-dialog').close()`);
       const bounds = await win.webContents.executeJavaScript(`({width:innerWidth, scroll:document.body.scrollWidth, node:typeof window.require, sidebar:!!document.getElementById('history').children.length})`);
       assert.equal(bounds.node, 'undefined'); assert(bounds.scroll <= bounds.width); assert(bounds.sidebar);
       fs.writeFileSync('release/smoke-result.json', JSON.stringify({ ok: true, checks: ['planner repairs malformed output with retained context', 'desktop preload', 'encrypted settings', 'seven role profiles', 'fifteen specialized agents', 'teamwork executed check and independent review gate', 'saved role instructions and selected skills', 'skill search', 'skill instructions in model input', 'configurable token limits', 'chat streaming', 'previous output reused as input', 'actual input/output/cache usage', 'manual compaction', 'history restore', 'inspector', 'renderer isolation', 'two simultaneous model requests and live AI cards', 'live task DAG and dependencies', 'agent details and zoom geometry', 'renderer reconnect snapshot', 'persisted historical acceptance gate', 'reduced motion', 'responsive navigation', 'layout', 'workbench checkpoint diff and context pins', 'budget configuration with model prices', 'isolated web preview and console errors', 'automatic web file refresh'], bounds }, null, 2));
