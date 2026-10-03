@@ -11,6 +11,7 @@ import { McpRegistry } from '../src/mcp.js';
 import { ProjectIntegrations } from '../src/project-integrations.js';
 import { ModelClient } from '../src/model.js';
 import { parseTeamPlan } from '../src/teamwork.js';
+import crypto from 'node:crypto';
 
 const roots: string[] = [], studios: StudioServerInstance[] = [], sockets: Socket[] = [], servers: http.Server[] = [];
 class Socket {
@@ -65,6 +66,21 @@ async function harness(configuration: Record<string, unknown> = {}, prepare?: (r
 }
 
 describe('Studio workbench WebSocket APIs', () => {
+  it('resumes past an older repair snapshot superseded by repair-2 without rerunning coders or planning', async () => {
+    vi.stubEnv('VIBE_API_KEY','fixture-only-key');vi.spyOn(ModelClient.prototype,'modelLimits').mockResolvedValue(undefined);
+    const chat=vi.spyOn(ModelClient.prototype,'chat').mockResolvedValue({content:'continued',toolCalls:[],model:'test-model'}),id='session-aabbccdd';
+    const {root,socket}=await harness({autoIntegrations:false,useWorktrees:false},root=>{
+      const file=path.join(root,'style.css');fs.writeFileSync(file,'latest');const hash=(text:string)=>crypto.createHash('sha256').update(text).digest('hex');
+      const tasks=parseTeamPlan(JSON.stringify({tasks:[{id:'code',title:'Code',role:'coder',expectedFiles:['style.css']},{id:'repair-1',title:'Repair 1',role:'coder',dependencies:['code'],expectedFiles:['style.css']},{id:'repair-2',title:'Repair 2',role:'coder',dependencies:['code'],expectedFiles:['style.css']},{id:'pending',title:'Continue',role:'general',description:'finish-pending',dependencies:['repair-2']}]}));
+      tasks.slice(0,3).forEach((task,index)=>{task.status='completed';task.completedAt=`2026-10-03T0${index+1}:00:00Z`;task.resultSummary='completed source';});
+      const fingerprints={code:{[file]:hash('latest')},'repair-1':{[file]:hash('older')},'repair-2':{[file]:hash('latest')}};
+      const directory=path.join(root,'.vibe','sessions',id);fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(path.join(directory,'resume.json'),JSON.stringify({goal:'Original goal',planRaw:'{"tasks":[]}',tasks,fingerprints,evidence:[],repairRounds:2,status:'failed'}));
+    });
+    await socket.request({type:'chat',prompt:'/teamwork tiếp tục tiến độ',sessionId:id},'run_end');
+    expect(chat).toHaveBeenCalledTimes(1);expect(chat.mock.calls[0][0].findLast(item=>item.role==='user')?.content).toBe('finish-pending');
+    const saved=JSON.parse(fs.readFileSync(path.join(root,'.vibe','sessions',id,'resume.json'),'utf8'));
+    expect(saved.tasks.find((task:any)=>task.id==='pending').status).toBe('completed');expect(saved.tasks.filter((task:any)=>task.role==='coder').every((task:any)=>task.resultSummary==='completed source')).toBe(true);
+  });
   it('releases the busy state when continuation has no selected Teamwork session', async () => {
     const chat = vi.spyOn(ModelClient.prototype, 'chat');
     const { socket } = await harness();

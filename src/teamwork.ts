@@ -20,6 +20,7 @@ import { dependencyFingerprints, qualityGate, verificationEvidence, recordEviden
 import { executionBatch, handoffContract, phaseAgents, phaseSchema, taskPhase, validateProtocol, waitingReason } from './team-protocol.js';
 import { scheduleRepairs } from './team-repair.js';
 import { Pipeline } from './pipeline.js';
+import { verifyCompletedSource } from './resume-sources.js';
 import { planObject, validatedPlan } from './plan-recovery.js';
 import { durableJson } from './checkpoints.js';
 import { RunJournal } from './run-journal.js';
@@ -129,11 +130,12 @@ export class Teamwork {
     if (resumed) {
       this.tasks = resumed.tasks;
       assertDag(this.tasks);
+      for (const task of this.tasks.filter(task => task.status === 'completed' && task.role === 'coder')) verifyCompletedSource(task, this.tasks, fingerprints, this.c.workspace);
+      const invalidated = new Set(this.tasks.filter(task => task.status === 'completed' && task.role !== 'coder' && evidence.get(task.id) && staleEvidence(evidence.get(task.id)!)).map(task => task.id));
+      for (let changed = true; changed;) { changed = false; for (const task of this.tasks) if (task.role !== 'coder' && task.status === 'completed' && !invalidated.has(task.id) && task.dependencies.some(id => invalidated.has(id))) { invalidated.add(task.id); changed = true; } }
       for (const task of this.tasks) {
-        const proof = evidence.get(task.id);
-        if (task.status === 'completed') {
-          if ((task.role === 'coder' && (!Object.keys(fingerprints[task.id] || {}).length || staleEvidence({ files: fingerprints[task.id] } as TaskEvidence))) || (proof && staleEvidence(proof))) throw new Error(`Resume requires source verification: completed task ${task.id} has missing or changed file fingerprints. Start a fresh plan to protect user edits.`);
-        } else { task.status = 'pending'; delete task.error; delete task.startedAt; delete task.completedAt; }
+        if (invalidated.has(task.id)) { task.status = 'pending'; task.retries = (task.retries || 0) + 1; evidence.delete(task.id); delete task.resultSummary; delete task.loadedSkills; }
+        if (task.status !== 'completed') { task.status = 'pending'; delete task.error; delete task.startedAt; delete task.completedAt; }
       }
       const scopes = [...new Set(this.tasks.map(task => task.worktreePath).filter(Boolean))];
       if (scopes.length > 1 || scopes.some(scope => !fs.existsSync(scope!))) throw new Error('Resume worktree is missing or ambiguous');
