@@ -4,8 +4,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { Quality, Role } from './types.js';
 import { roleSchema, profileSchema, namedAgentSchema, defaultAgents, type NamedAgent, type RoleProfile } from './roles.js';
+import { mcpServersSchema, type McpServersConfig } from './mcp.js';
 const Pool = z.object({ id: z.string(), tags: z.array(z.string()).default([]), priority: z.number().default(50), maxContext: z.number().optional(), estimatedLatencyClass: z.enum(['fast', 'medium', 'slow']).optional(), estimatedCostClass: z.enum(['low', 'medium', 'high']).optional() });
 const FileConfig = z.object({
+  mcpServers: mcpServersSchema.optional(),
   agentProfiles: z.partialRecord(roleSchema, profileSchema.partial()).optional(),
   namedAgents: z.array(namedAgentSchema).max(32).optional(),
   model: z.string().optional(), maxAgents: z.number().int().positive().max(16).optional(), quality: z.enum(['fast', 'balanced', 'high', 'max']).optional(),
@@ -18,6 +20,7 @@ const FileConfig = z.object({
 }).passthrough();
 export type ModelCandidate = z.infer<typeof Pool>;
 export interface Config {
+  mcpServers?: McpServersConfig;
   baseUrl: string; apiKey: string; model: string; maxAgents: number; workspace: string; debug: boolean; quality: Quality;
   autoRunTests: boolean; reviewBeforeFinish: boolean; useWorktrees: boolean; models: Record<string, string | string[]>; modelPool: ModelCandidate[];
   contextMode?: 'auto' | 'manual'; contextWindow?: number; maxOutputTokens?: number;
@@ -36,6 +39,7 @@ export function loadConfig(workspace = process.env.VIBE_WORKSPACE || process.cwd
   const models = { ...(merged.models || {}) };
   for (const [role, value] of Object.entries(roleEnv)) if (value) models[role] = value;
   return {
+    mcpServers: merged.mcpServers || {},
     baseUrl: (process.env.VIBE_BASE_URL || 'https://9router.tungdota.io.vn/v1').replace(/\/$/, ''), apiKey: process.env.VIBE_API_KEY || '',
     model, maxAgents: Number(process.env.VIBE_MAX_AGENTS || merged.maxAgents || 4), workspace: path.resolve(workspace), debug: process.env.VIBE_DEBUG === '1',
     quality: (process.env.VIBE_QUALITY || merged.quality || 'balanced') as Quality, autoRunTests: merged.autoRunTests ?? true,
@@ -45,7 +49,7 @@ export function loadConfig(workspace = process.env.VIBE_WORKSPACE || process.cwd
     namedAgents: merged.namedAgents ?? structuredClone(defaultAgents),
     modelPool: merged.modelPool || [{ id: model, tags: ['coding', 'reasoning', 'review', 'tools'], priority: 100 }], sshHosts: merged.sshHosts || {},
     contextMode: process.env.VIBE_CONTEXT_MODE === 'manual' ? 'manual' : process.env.VIBE_CONTEXT_MODE === 'auto' ? 'auto' : merged.contextMode ?? (process.env.VIBE_CONTEXT_WINDOW || merged.contextWindow ? 'manual' : 'auto'),
-    contextWindow: Number(process.env.VIBE_CONTEXT_WINDOW || merged.contextWindow || 32768), maxOutputTokens: Number(process.env.VIBE_OUTPUT_TOKENS || merged.maxOutputTokens || 4096)
+    contextWindow: Number(process.env.VIBE_CONTEXT_WINDOW || merged.contextWindow || 131072), maxOutputTokens: Number(process.env.VIBE_OUTPUT_TOKENS || merged.maxOutputTokens || 4096)
   };
 }
 export function assertConfigured(c: Config) { if (!c.apiKey) throw new Error('Thiếu khóa API. Nhập khóa trong Cài đặt hoặc đặt VIBE_API_KEY.'); }

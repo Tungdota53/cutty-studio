@@ -9,6 +9,34 @@ let teamData = null, skillSearchTimer;
 const liveAgents = new Map();
 const approvalQueue = [];
 let approvalsTimer;
+let streamFrame, streamTimer, progressCard;
+const progressRows = new Map();
+function resetProgress() { clearTimeout(streamTimer); streamTimer = null; cancelAnimationFrame(streamFrame); streamFrame = null; progressCard = null; progressRows.clear(); }
+function progress(event) {
+  if (!event?.message && !event?.tool) return;
+  if (event.sessionId && progressRows.has('run-request')) { progressRows.get('run-request').remove(); progressRows.delete('run-request'); }
+  $('welcome').hidden = true;
+  if (!progressCard) {
+    progressCard = document.createElement('details'); progressCard.className = 'chat-progress'; progressCard.open = true;
+    const summary = document.createElement('summary'); summary.textContent = 'Tiến độ thực hiện'; progressCard.append(summary, document.createElement('div')); $('messages').append(progressCard);
+  }
+  const id = event.id || `${event.type || 'step'}:${event.taskId || event.tool || event.message}`;
+  let row = progressRows.get(id);
+  if (!row) { row = document.createElement('div'); row.className = 'progress-row'; progressRows.set(id, row); progressCard.lastChild.append(row); }
+  const eventType = event.eventType || event.type || '';
+  row.dataset.status = event.status || (/failed|error/.test(eventType) ? 'failed' : /_end|complete/.test(eventType) ? 'completed' : 'running');
+  row.replaceChildren(); const mark = document.createElement('span'); mark.className = 'progress-mark'; mark.textContent = /failed|error|blocked/.test(row.dataset.status) ? '!' : /completed|done/.test(row.dataset.status) ? '✓' : '◌';
+  const text = document.createElement('span'); text.textContent = event.message || event.tool; row.append(mark, text);
+  if (event.agentId) { const badge = document.createElement('small'); badge.textContent = event.agentId; row.append(badge); }
+  while (progressCard.lastChild.children.length > 60) { const first = progressCard.lastChild.firstChild; for (const [key, value] of progressRows) if (value === first) progressRows.delete(key); first.remove(); }
+  progressCard.firstChild.textContent = /failed|error/.test(row.dataset.status) ? 'Tiến độ · cần xử lý' : 'Tiến độ · ' + (event.message || event.tool);
+  scrollEnd();
+}
+function flushStream(final = false) {
+  clearTimeout(streamTimer); streamTimer = null; cancelAnimationFrame(streamFrame); streamFrame = null;
+  if (!assistant) return;
+  assistant.classList.toggle('streaming', !final); renderText(assistant, response); scrollEnd();
+}
 function send(payload) {
   if (!ws || ws.readyState !== WebSocket.OPEN) { toast('Mất kết nối. Đang thử kết nối lại…'); return false; }
   ws.send(JSON.stringify(payload)); return true;
@@ -33,7 +61,7 @@ function configure(next) {
   $('model-name').textContent = next.model;
   $('base-url').value = next.baseUrl; $('model-input').value = next.model;
   $('context-mode').value = next.contextMode || 'auto';
-  $('context-window').value = next.contextWindow || 32768; $('output-tokens').value = next.maxOutputTokens || 4096;
+  $('context-window').value = next.contextWindow || 131072; $('output-tokens').value = next.maxOutputTokens || 4096;
   showContextCapability();
   if (!currentContext) showContext(null);
   $('api-key').placeholder = next.apiKey ? 'Đã có khóa · để trống để giữ nguyên' : 'Nhập khóa API';
@@ -48,10 +76,11 @@ function showContextCapability() {
 const formatTokens = number => new Intl.NumberFormat('vi-VN').format(number || 0);
 function showContext(stats, summary) {
   currentContext = stats;
-  const windowSize = stats?.window || config?.contextWindow || 32768;
+  const windowSize = stats?.window || config?.contextWindow || 131072;
   $('context-button').textContent = stats ? `Ngữ cảnh ~${stats.percent}%` : `Ngữ cảnh ${formatTokens(windowSize)}`;
   $('context-window-value').textContent = formatTokens(windowSize);
   $('context-input-value').textContent = stats ? '~' + formatTokens(stats.estimatedInput) : 'Chưa gửi';
+  $('context-budget-value').textContent = stats ? formatTokens(stats.inputBudget) : 'Chưa gửi';
   $('context-output-value').textContent = formatTokens(stats?.outputReserve || config?.maxOutputTokens || 4096);
   $('context-compactions').textContent = formatTokens(stats?.compactions);
   $('context-progress').value = stats?.percent || 0;
@@ -75,26 +104,13 @@ function addMessage(role, content = '') {
   const name = document.createElement('span'); name.textContent = role === 'user' ? 'Bạn' : 'Vibe';
   header.append(avatar, name);
   const body = document.createElement('div'); body.className = 'message-content'; body.textContent = content;
+  body.dataset.raw = content;
+  const copy = document.createElement('button'); copy.className = 'message-copy'; copy.type = 'button'; copy.textContent = 'Sao chép'; copy.onclick = () => ChatOutput.copy(body.dataset.raw || body.textContent, copy); header.append(copy);
   article.append(header, body); $('messages').append(article); scrollEnd(); return body;
 }
-function scrollEnd() { $('chat-scroll').scrollTop = $('chat-scroll').scrollHeight; }
+function scrollEnd() { const el = $('chat-scroll'); if (el.scrollHeight - el.scrollTop - el.clientHeight < 200 || busy) el.scrollTop = el.scrollHeight; }
 // Markdown is constructed as DOM nodes; model output never becomes HTML.
-function renderText(target, text) {
-  target.replaceChildren();
-  const chunks = text.split(/(```[^\n]*\n[\s\S]*?```)/g);
-  for (const chunk of chunks) {
-    if (chunk.startsWith('```') && chunk.endsWith('```')) {
-      const pre = document.createElement('pre'), code = document.createElement('code');
-      code.textContent = chunk.slice(chunk.indexOf('\n') + 1, -3).replace(/\n$/, ''); pre.append(code); target.append(pre);
-    } else {
-      for (const part of chunk.split(/(\*\*[^*]+\*\*|`[^`\n]+`)/g)) {
-        const element = part.startsWith('**') && part.endsWith('**') ? 'strong' : part.startsWith('`') && part.endsWith('`') ? 'code' : null;
-        if (element) { const node = document.createElement(element); node.textContent = part.slice(element === 'strong' ? 2 : 1, element === 'strong' ? -2 : -1); target.append(node); }
-        else target.append(document.createTextNode(part));
-      }
-    }
-  }
-}
+function renderText(target, text) { ChatOutput.render(target, text); }
 function showHistory(sessions) {
   $('history').replaceChildren();
   if (!sessions.length) { const p = document.createElement('p'); p.className = 'sidebar-empty'; p.textContent = 'Ý tưởng tiếp theo bắt đầu ở đây.'; $('history').append(p); }
@@ -106,7 +122,7 @@ function showHistory(sessions) {
     button.onclick = () => {
       if (busy) return toast('Hãy dừng tác vụ trước khi chuyển cuộc trò chuyện.');
       currentSession = session.id; $('chat-title').textContent = session.task || 'Cuộc trò chuyện';
-      assistant = null; response = ''; $('messages').replaceChildren(); $('welcome').hidden = true;
+      cancelAnimationFrame(streamFrame); resetProgress(); assistant = null; response = ''; $('messages').replaceChildren(); $('welcome').hidden = true; progress({id:'history-loading',message:'Đang tải cuộc trò chuyện…',status:'running'});
       send({ type: 'get_conversation', sessionId: session.id }); showHistory(sessions);
     };
     $('history').append(button);
@@ -146,7 +162,7 @@ function answerApproval(approved) {
 }
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/${credential ? '?token=' + encodeURIComponent(credential) : ''}`);
-  ws.onopen = () => { TeamMap.connection(true); send({ type: 'get_team' }); $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
+  ws.onopen = () => { TeamMap.connection(true); send({ type: 'get_team' }); send({type:'get_mcp'}); $('connection-dot').classList.add('online'); $('connection-text').textContent = 'Đã kết nối'; $('send-button').disabled = false; };
   ws.onclose = () => {
     TeamMap.connection(false);
     $('connection-dot').classList.remove('online'); $('connection-text').textContent = 'Đang kết nối lại'; $('send-button').disabled = true;
@@ -172,9 +188,11 @@ function connect() {
       case 'conversation':
         if (msg.sessionId !== currentSession) break;
         TeamMap.restore({ sessionId: msg.sessionId.startsWith('session-') ? msg.sessionId : null, tasks: msg.tasks || [], gate: msg.gate, pipeline: msg.pipeline, goal: $('chat-title').textContent }, true);
-        $('messages').replaceChildren();
+        resetProgress(); $('messages').replaceChildren();
         for (const item of msg.messages || []) renderText(addMessage(item.role, item.content), item.content);
         if (!msg.messages?.length) addMessage('assistant', msg.summary || 'Phiên teamwork này chưa có nội dung trò chuyện.');
+        for (const event of msg.progress || []) progress(event);
+        if (progressCard) progressCard.open = false;
         showContext(msg.context, msg.memorySummary);
         scrollEnd(); break;
       case 'context_stats': if (msg.sessionId === currentSession) showContext(msg.stats); break;
@@ -182,23 +200,26 @@ function connect() {
       case 'compaction_start': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tóm tắt ngữ cảnh cũ…'; log('Đang nén ngữ cảnh để tiếp tục cuộc trò chuyện.'); } break;
       case 'compaction_end': if (msg.sessionId === currentSession) { $('run-text').textContent = 'Đang tiếp tục…'; log(msg.skipped ? 'Giữ nguyên ngữ cảnh vì bản tóm tắt không ngắn hơn.' : `Đã nén ngữ cảnh · lần ${msg.compactions}${msg.mode === 'extractive' ? ' · dùng trích đoạn dự phòng, cần kiểm tra lại chi tiết' : ''}${msg.before != null ? ` · ${formatTokens(msg.before)} → ${formatTokens(msg.after)} token ước tính` : ''}.`); } break;
       case 'run_start': setBusy(true); break;
-      case 'run_end': setBusy(false); TeamMap.end(); approvalQueue.length = 0; clearTimeout(approvalsTimer); nextApproval(); send({ type: 'get_sessions' }); send({ type: 'get_diff' }); break;
+      case 'run_end': flushStream(true); setBusy(false); TeamMap.end(); approvalQueue.length = 0; clearTimeout(approvalsTimer); nextApproval(); send({ type: 'get_sessions' }); send({ type: 'get_diff' }); break;
       case 'stream_chunk':
-        if (!assistant) assistant = addMessage('assistant'); response += msg.token || ''; assistant.textContent = response; scrollEnd(); break;
-      case 'stream_end': if (assistant) renderText(assistant, response); scrollEnd(); break;
+        if (!assistant) assistant = addMessage('assistant'); response += msg.token || ''; if (!streamFrame && !streamTimer) streamTimer = setTimeout(() => { streamTimer = null; streamFrame = requestAnimationFrame(() => flushStream()); }, 70); break;
+      case 'stream_end': flushStream(true); break;
+      case 'progress_event': if (msg.sessionId === currentSession) progress(msg.event || msg); break;
+      case 'chat_session': if (msg.previousSessionId === currentSession) currentSession = msg.sessionId; break;
+      case 'mcp_status': showMcp(msg); break;
       case 'thinking': $('run-text').textContent = 'Đang phân tích yêu cầu…'; break;
       case 'terminal_log': log(msg.text || ''); break;
       case 'teamwork_event': TeamMap.event(msg.event); showAgent(msg.event); if (msg.event.message) log(msg.event.message); $('run-text').textContent = msg.event.message || msg.event.step || 'Nhóm đang thực hiện tác vụ…'; break;
       case 'diff': showDiff(msg.diff || ''); break;
       case 'approval_request': approvalQueue.push({ ...msg, deadline: Date.now() + msg.timeoutMs }); nextApproval(); break;
-      case 'error': toast(msg.message); if ($('team-dialog').open) $('team-status').textContent = msg.message; if (pendingSettings) { $('settings-status').textContent = msg.message; pendingSettings = null; } break;
+      case 'error': toast(msg.message); if ($('mcp-dialog').open) { $('mcp-status').textContent = msg.message; $('mcp-form').querySelector('[type=submit]').disabled = false; } if ($('team-dialog').open) $('team-status').textContent = msg.message; if (pendingSettings) { $('settings-status').textContent = msg.message; pendingSettings = null; } break;
     }
   };
 }
 function newChat() {
   if (busy) return;
   TeamMap.reset(); TeamMap.view('chat');
-  currentSession = null; assistant = null; response = ''; $('messages').replaceChildren(); $('welcome').hidden = false; $('chat-title').textContent = 'Cuộc trò chuyện mới'; $('prompt').value = ''; $('prompt').focus();
+  resetProgress(); cancelAnimationFrame(streamFrame); currentSession = null; assistant = null; response = ''; $('messages').replaceChildren(); $('welcome').hidden = false; $('chat-title').textContent = 'Cuộc trò chuyện mới'; $('prompt').value = ''; $('prompt').focus();
   showContext(null, '');
   send({ type: 'get_sessions' });
 }
@@ -208,7 +229,7 @@ $('composer').onsubmit = event => {
   const teamwork = $('mode').value === 'teamwork';
   if (!currentSession || !currentSession.startsWith('chat-')) currentSession = `chat-${crypto.randomUUID()}`;
   if (!send({ type: 'chat', prompt: teamwork ? `/teamwork ${prompt}` : prompt, sessionId: currentSession, agentId: teamwork ? undefined : $('chat-agent').value || undefined })) return;
-  setBusy(true); assistant = null; response = ''; addMessage('user', prompt); $('chat-title').textContent = prompt.slice(0, 80); $('prompt').value = ''; $('prompt').style.height = '';
+  setBusy(true); resetProgress(); assistant = null; response = ''; addMessage('user', prompt); progress({id:'run-request',message: teamwork ? 'Đang lập kế hoạch cho nhóm agent…' : 'Đã nhận yêu cầu · đang kết nối model…',status:'running'}); $('chat-title').textContent = prompt.slice(0, 80); $('prompt').value = ''; $('prompt').style.height = '';
 };
 $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('composer').requestSubmit(); } };
 $('prompt').oninput = () => { $('prompt').style.height = 'auto'; $('prompt').style.height = `${Math.min(180, $('prompt').scrollHeight)}px`; };
@@ -361,4 +382,49 @@ $('add-agent').onclick = () => { if (!teamData || busy) return; const card = nam
 $('fetch-models').onclick = () => send({ type: 'get_models' });
 $('context-mode').onchange = showContextCapability;
 $('model-input').oninput = showContextCapability;
+function mcpCard(server = {}) {
+  const card = document.createElement('section'); card.className = 'mcp-card'; card.dataset.id = server.id || 'server-' + crypto.randomUUID().slice(0, 8);
+  const head = document.createElement('div'); head.className = 'mcp-card-head';
+  const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = server.enabled !== false; enabled.dataset.field = 'enabled'; enabled.setAttribute('aria-label', 'Bật server');
+  const title = document.createElement('strong'); title.textContent = card.dataset.id;
+  const state = document.createElement('span'); state.className = 'mcp-state'; state.dataset.status = server.status || 'configured'; state.textContent = `${server.status || 'Chưa kết nối'} · ${server.toolCount || 0} công cụ`;
+  const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'icon-button'; remove.textContent = '×'; remove.setAttribute('aria-label', 'Xóa server'); remove.onclick = () => card.remove(); head.append(enabled, title, state, remove); card.append(head);
+  const field = (name, label, value, type = 'text') => { const el = document.createElement('label'); el.className = 'field'; el.append(document.createTextNode(label)); const input = document.createElement('input'); input.type = type; input.dataset.field = name; input.value = value || ''; el.append(input); card.append(el); return el; };
+  const transportLabel = document.createElement('label'); transportLabel.className = 'field'; transportLabel.textContent = 'Loại kết nối'; const transport = document.createElement('select'); transport.dataset.field = 'transport'; for (const [value, name] of [['http','HTTP'],['stdio','Stdio']]) { const option = document.createElement('option'); option.value = value; option.textContent = name; transport.append(option); } transport.value = server.transport || 'http'; transportLabel.append(transport); card.append(transportLabel);
+  const url = field('url', 'URL server', server.url, 'url'); url.querySelector('input').placeholder = 'https://server.example/mcp';
+  const command = field('command', 'Chương trình', server.command); command.querySelector('input').placeholder = 'npx hoặc đường dẫn executable';
+  const args = field('args', 'Tham số (mảng JSON)', JSON.stringify(server.args || []));
+  if (server.hasSensitiveArgs) { args.querySelector('input').value = ''; args.querySelector('input').placeholder = 'Đã lưu tham số bảo mật · để trống để giữ'; card.dataset.secretArgs = 'true'; }
+  const env = field('env', server.hasEnv ? 'Biến môi trường JSON (đã lưu · để trống để giữ)' : 'Biến môi trường JSON (tùy chọn)', '', 'password');
+  const token = field('token', server.hasHeaders ? 'Bearer token (đã lưu · để trống để giữ)' : 'Bearer token (tùy chọn)', '', 'password'); token.querySelector('input').autocomplete = 'off';
+  const toggle = () => { url.hidden = token.hidden = transport.value !== 'http'; command.hidden = args.hidden = env.hidden = transport.value !== 'stdio'; }; transport.onchange = toggle; toggle();
+  if (server.error) { const error = document.createElement('p'); error.className = 'mcp-error'; error.textContent = server.error; card.append(error); }
+  return card;
+}
+function showMcp(msg) {
+  $('mcp-servers').replaceChildren(...(msg.servers || []).map(mcpCard));
+  $('mcp-count').textContent = (msg.servers || []).filter(server => server.status === 'connected').length;
+  $('mcp-status').textContent = msg.saved ? 'Đã lưu cấu hình. Công cụ MCP sẵn sàng cho tác vụ tiếp theo.' : 'Bật server cần dùng rồi lưu để kết nối.';
+  $('mcp-form').querySelector('[type=submit]').disabled = false;
+}
+$('mcp-button').onclick = () => { $('mcp-dialog').showModal(); send({type:'get_mcp'}); };
+$('mcp-add').onclick = () => $('mcp-servers').append(mcpCard());
+$('mcp-form').onsubmit = event => {
+  event.preventDefault(); if (busy) { $('mcp-status').textContent = 'Dừng tác vụ trước khi thay đổi MCP.'; return; }
+  try {
+    const servers = {};
+    for (const card of $('mcp-servers').children) {
+      const value = name => card.querySelector(`[data-field="${name}"]`).value.trim();
+      const transport = value('transport'), entry = { enabled: card.querySelector('[data-field="enabled"]').checked, transport };
+      if (transport === 'http') { entry.url = value('url'); if (value('token')) entry.headers = { Authorization: 'Bearer ' + value('token') }; }
+      else {
+        entry.command = value('command');
+        if (value('args') || card.dataset.secretArgs !== 'true') { entry.args = JSON.parse(value('args') || '[]'); if (!Array.isArray(entry.args) || entry.args.some(arg => typeof arg !== 'string')) throw new Error('Tham số phải là mảng các chuỗi JSON.'); }
+        if (value('env')) { entry.env = JSON.parse(value('env')); if (!entry.env || typeof entry.env !== 'object' || Array.isArray(entry.env) || Object.values(entry.env).some(item => typeof item !== 'string')) throw new Error('Biến môi trường phải là object JSON với giá trị chuỗi.'); }
+      }
+      servers[card.dataset.id] = entry;
+    }
+    if (send({type:'configure_mcp',servers})) { $('mcp-status').textContent = 'Đang kết nối các server…'; $('mcp-form').querySelector('[type=submit]').disabled = true; }
+  } catch (error) { $('mcp-status').textContent = error.message; }
+};
 connect();

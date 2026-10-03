@@ -22,7 +22,7 @@ function connect(url: string) {
   const socket = new WebSocket(url.replace('http:', 'ws:')); sockets.push(socket);
   const messages: any[] = [];
   socket.on('message', data => messages.push(JSON.parse(String(data))));
-  return { socket, async wait(type: string) {
+  return { socket, messages, async wait(type: string) {
     const start = Date.now();
     while (Date.now() - start < 4000) { const index = messages.findIndex(msg => msg.type === type); if (index >= 0) return messages.splice(index, 1)[0]; await new Promise(resolve => setTimeout(resolve, 10)); }
     throw new Error(`No ${type} event`);
@@ -99,6 +99,7 @@ describe('Desktop backend', () => {
       for (const prompt of ['First question', 'Follow-up question']) {
         client.socket.send(JSON.stringify({ type: 'chat', prompt, agentId: namedAgents[turn++].id, sessionId: 'chat-test-conversation' })); await client.wait('run_end');
       }
+      expect(requests, JSON.stringify(client.messages)).toHaveLength(2);
       expect(requests[0].model).toBe('model-alpha'); expect(requests[1].model).toBe('model-beta');
       expect(requests[1].messages.map((msg: any) => msg.content)).toContain('First question');
       expect(requests[1].messages.map((msg: any) => msg.content)).toContain('Hello from model');

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 execFileSync(process.execPath, ['--check', 'src/studio/public/app.js']);
+execFileSync(process.execPath, ['--check', 'src/studio/public/chat-output.js']);
 execFileSync(process.execPath, ['--check', 'src/studio/public/team-map.js']);
 fs.mkdirSync('dist/studio/public', { recursive: true });
 for (const name of fs.readdirSync('src/studio/public')) fs.copyFileSync(`src/studio/public/${name}`, `dist/studio/public/${name}`);

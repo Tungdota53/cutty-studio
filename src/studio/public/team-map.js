@@ -167,7 +167,7 @@ window.TeamMap = (() => {
   }
   function reset() { tasks = []; live.clear(); planner = null; pipeline = null; get('map-pipeline-card').open = false; selected = null; gate = null; session = null; running = false; goal = ''; get('map-nodes').replaceChildren(); get('map-feed').replaceChildren(node('p','muted','Sự kiện mới sẽ xuất hiện ở đây.')); get('map-detail-content').replaceChildren(node('p','detail-placeholder','Chọn tác vụ để xem chi tiết agent.')); get('map-viewport').dataset.following = ''; schedule(); }
   function event(event) {
-    if (event.type === 'session_start') { reset(); session = event.sessionId; goal = event.goal || ''; running = true; view('team'); }
+    if (event.type === 'session_start') { reset(); session = event.sessionId; goal = event.goal || ''; running = true; }
     if (event.agentId && !event.taskId && event.role === 'planner') planner = {...planner,...event};
     if (event.type === 'task_snapshot') { pipeline = event.pipeline || pipeline; tasks = event.tasks || []; maxAgents = event.maxAgents || maxAgents; for (const task of tasks) { const prior = live.get(task.id); if (!prior) continue; if (task.assignedAgentId !== prior.agentId) live.delete(task.id); else if (task.status !== prior.status) live.set(task.id,{ agentId:prior.agentId, configuredAgentId:prior.configuredAgentId, agentName:prior.agentName, model:prior.model, skills:prior.skills, status:task.status }); } }
     if (event.taskId && event.type !== 'task_snapshot') {

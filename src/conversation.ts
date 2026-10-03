@@ -12,6 +12,7 @@ export interface ConversationState {
   lastCompaction?: { mode: 'model' | 'extractive'; before: number; after: number };
 }
 export interface ContextStats {
+  limitSource?: 'provider' | 'manual' | 'fallback' | 'runtime';
   window: number; inputBudget: number; outputReserve: number; estimatedInput: number;
   percent: number; compactions: number; retainedMessages: number;
   usage: TokenUsage; lastUsage?: TokenUsage;
@@ -30,7 +31,7 @@ export function contextExcerpt(text: string, budget: number): string {
   return available ? bytes.subarray(0, head).toString('utf8') + marker + bytes.subarray(tail).toString('utf8') : '';
 }
 export function contextLimits(c: Pick<Config, 'contextWindow' | 'maxOutputTokens'>) {
-  const window = c.contextWindow ?? 32768, output = c.maxOutputTokens ?? 4096;
+  const window = c.contextWindow ?? 131072, output = c.maxOutputTokens ?? 4096;
   if (!Number.isSafeInteger(window) || window < 4096 || !Number.isSafeInteger(output) || output < 128 || output > window / 2) throw new Error('Context phải là số nguyên an toàn từ 4.096 token; đầu ra từ 128 và không vượt một nửa context. Dùng giới hạn thực tế của nhà cung cấp.');
   return { window, output, inputBudget: window - output - Math.max(128, Math.ceil(window * 0.03)) };
 }

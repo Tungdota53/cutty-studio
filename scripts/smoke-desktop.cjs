@@ -9,6 +9,8 @@ require('electron').dialog.showErrorBox = (title, message) => {
 };
 const root = path.resolve(process.env.VIBE_SMOKE_WORKSPACE || '.vibe/desktop-smoke');
 fs.mkdirSync(root, { recursive: true });
+fs.mkdirSync(path.join(root, '.vibe'), { recursive: true });
+fs.writeFileSync(path.join(root, '.vibe', 'config.json'), JSON.stringify({ useWorktrees: false }));
 app.setPath('userData', root);
 process.env.VIBE_WORKSPACE = root;
 process.env.VIBE_SMOKE_TEST = '1';
@@ -67,6 +69,7 @@ app.on('browser-window-created', (_, win) => {
   win.webContents.on('console-message', (_event, _level, message) => { if (String(message).includes('Error')) console.log(message); });
   win.webContents.once('did-finish-load', async () => {
     try {
+      await win.webContents.executeJavaScript(`window.addEventListener('error', event => console.error(event.error?.stack || event.message));window.addEventListener('unhandledrejection', event => console.error(event.reason?.stack || event.reason));`);
       await wait(win, `document.getElementById('connection-text').textContent === 'Đã kết nối' && document.getElementById('workspace-name').textContent !== 'Dự án' && typeof window.desktop === 'object'`);
       fs.mkdirSync('release', { recursive: true });
       await win.webContents.capturePage();
@@ -105,6 +108,12 @@ app.on('browser-window-created', (_, win) => {
       assert.equal(requests.at(-1).max_tokens, 2048);
       assert(requests.at(-1).messages[0].content.includes('builtin:workspace-assistant'));
       await wait(win, `document.getElementById('usage-output').textContent==='24'`);
+      assert(await win.webContents.executeJavaScript(`document.querySelectorAll('.code-toolbar button').length>0 && document.querySelectorAll('.syntax-keyword').length>0 && typeof window.ChatOutput.render==='function'`));
+      await win.webContents.executeJavaScript(`document.getElementById('mcp-button').click();`);
+      await wait(win, `document.getElementById('mcp-status').textContent.includes('Bật server')`);
+      await win.webContents.executeJavaScript(`document.getElementById('mcp-add').click();document.getElementById('mcp-add').click();`);
+      assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('.mcp-card').length`), 2);
+      await win.webContents.executeJavaScript(`document.getElementById('mcp-dialog').close();`);
       await win.webContents.executeJavaScript(`document.getElementById('chat-agent').value='assistant';`);
       await win.webContents.executeJavaScript(`document.getElementById('prompt').value='Tiếp tục từ kết quả trên';document.getElementById('composer').requestSubmit();`);
       await wait(win, `document.querySelectorAll('.message.assistant').length===2 && document.getElementById('stop-button').hidden`);
@@ -120,12 +129,15 @@ app.on('browser-window-created', (_, win) => {
       await wait(win, `document.querySelectorAll('.message').length >= 2`);
       await win.webContents.executeJavaScript(`document.getElementById('mode').value='teamwork';document.getElementById('prompt').value='smoke-teamwork-page';document.getElementById('composer').requestSubmit();`);
       await wait(win, `document.querySelectorAll('.fleet-card.running').length>=2 && document.querySelectorAll('.agent-node').length===5`);
+      assert.equal(await win.webContents.executeJavaScript(`document.body.dataset.view`), 'chat');
+      assert(await win.webContents.executeJavaScript(`document.querySelectorAll('.progress-row').length>0`));
+      await win.webContents.executeJavaScript(`document.getElementById('view-team').click();`);
       assert.equal(await win.webContents.executeJavaScript(`document.body.dataset.view`), 'team');
       assert(await win.webContents.executeJavaScript(`document.querySelectorAll('.active-ai-pill').length>=2 && document.getElementById('map-active-ais').textContent.includes('agent-specific-model') && document.getElementById('map-active-ais').textContent.includes('smoke-model')`));
       win.webContents.debugger.attach('1.3');
       await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name:'prefers-reduced-motion', value:'reduce' }] });
       await win.webContents.executeJavaScript(`document.querySelector('.fleet-card.running').click();document.getElementById('map-follow').click();`);
-      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('coder')`));
+      await wait(win, `document.getElementById('map-detail-content').textContent.includes('coder')`);
       await win.webContents.capturePage();
       await new Promise(resolve => setTimeout(resolve, 150));
       fs.writeFileSync('release/preview-map-live.png', (await win.webContents.capturePage()).toPNG());
@@ -140,7 +152,7 @@ app.on('browser-window-created', (_, win) => {
       await win.webContents.executeJavaScript(`document.querySelector('[data-task=T4]').click();document.getElementById('map-fit').click();`);
       await wait(win, `document.getElementById('map-detail-content').textContent.includes('Fresh audit')`);
       assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('T3')`));
-      assert(await win.webContents.executeJavaScript(`document.getElementById('map-detail-content').textContent.includes('Fresh audit')`));
+      await wait(win, `document.getElementById('map-detail-content').textContent.includes('Fresh audit')`);
       const beforeZoom = await win.webContents.executeJavaScript(`document.getElementById('map-zoom-value').textContent`);
       await win.webContents.executeJavaScript(`document.getElementById('map-zoom-in').click();`);
       assert.notEqual(await win.webContents.executeJavaScript(`document.getElementById('map-zoom-value').textContent`), beforeZoom);

@@ -14,7 +14,7 @@ export interface Skill { id: string; name: string; description: string; source: 
 const bundled = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skills');
 export class SkillLibrary {
   constructor(private workspace: string, private userRoot = path.join(os.homedir(), '.codex', 'skills'), private builtins = bundled) {}
-  list(): Skill[] {
+  list(onlyId?: string): Skill[] {
     const result: Skill[] = [];
     for (const [source, root] of [['project', path.join(this.workspace, '.agents', 'skills')], ['workspace', path.join(this.workspace, '.vibe', 'skills')], ['user', this.userRoot], ['builtin', this.builtins], ['github', path.join(path.dirname(this.builtins), 'vendor-skills')]]) {
       if (['project', 'workspace'].includes(source)) {
@@ -27,6 +27,10 @@ export class SkillLibrary {
             if (!item.isDirectory() || item.isSymbolicLink()) continue;
             const folder = path.join(dir, item.name), file = path.join(folder, 'SKILL.md');
             if (fs.existsSync(file)) {
+              const id = `${source}:${path.relative(root, folder).split(path.sep).join('/')}`;
+              // Resource reads verify the requested bundle without rehashing
+              // every unrelated vendor reference on each tool call.
+              if (onlyId?.includes(':') && id !== onlyId) continue;
               try {
                 safePath(root, path.relative(root, file));
                 if (fs.statSync(file).size > 64000) continue;
@@ -39,7 +43,6 @@ export class SkillLibrary {
                   const integrity = Boolean(manifest.files?.['SKILL.md'] && manifest.files?.['LICENSE.txt']) && Object.entries(manifest.files as Record<string, string>).every(([name, expected]) => crypto.createHash('sha256').update(fs.readFileSync(safePath(folder, name))).digest('hex') === expected);
                   provenance = { repository: manifest.repository, commit: manifest.commit, license: manifest.license, url: manifest.url, integrity, ...(typeof manifest.adaptation === 'string' ? { adaptation: manifest.adaptation } : {}), ...(Array.isArray(manifest.sourcePaths) && manifest.sourcePaths.every((item: unknown) => typeof item === 'string') ? { sourcePaths: manifest.sourcePaths } : {}) };
                 }
-                const id = `${source}:${path.relative(root, folder).split(path.sep).join('/')}`;
                 result.push({ id, name: field('name') || item.name, description: (field('description') || '').slice(0, 1200), source, file, provenance, recommendedRoles: skillRoutes[id]?.roles, requires: skillRoutes[id]?.requires });
               } catch { /* Skip invalid or escaped skill paths. */ }
             } else walk(folder, depth + 1);
@@ -71,7 +74,7 @@ export class SkillLibrary {
     return { ...skill, instructions };
   }
   resource(id: string, resource: string, startLine = 1, endLine = startLine + 299) {
-    const skill = this.resolve(id);
+    const skill = this.resolve(id, this.list(id));
     if (skill.provenance && !skill.provenance.integrity) throw new Error('Skill không khớp checksum');
     if (isSensitivePath(resource)) throw new Error('Tài nguyên chứa thông tin nhạy cảm bị chặn');
     const file = safePath(path.dirname(skill.file), resource);

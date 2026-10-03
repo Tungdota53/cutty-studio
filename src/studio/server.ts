@@ -18,6 +18,7 @@ import { ConversationContext, contextLimits } from '../conversation.js';
 import { systemPrompt } from '../prompts.js';
 import { roleCatalog, roleProfile, roles, teamSchema, assignedAgent, defaultAgents } from '../roles.js';
 import { SkillLibrary } from '../skills.js';
+import { McpRegistry, mcpServersSchema } from '../mcp.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +68,8 @@ export function sanitizeConfig(config: Config): Config {
   if (sanitized.apiKey) {
     sanitized.apiKey = '[REDACTED]';
   }
+  // MCP connection details may carry credentials. Use get_mcp's safe status API.
+  delete sanitized.mcpServers;
   return sanitized;
 }
 
@@ -94,7 +97,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
   }
 
   let c = loadConfig(workspaceOverride);
-  c.contextWindow = Number(process.env.VIBE_CONTEXT_WINDOW || c.contextWindow || 32768);
+  c.contextWindow = Number(process.env.VIBE_CONTEXT_WINDOW || c.contextWindow || 131072);
   c.maxOutputTokens = Number(process.env.VIBE_OUTPUT_TOKENS || c.maxOutputTokens || 4096);
   contextLimits(c);
   const db = new Store(path.join(c.workspace, '.vibe'));
@@ -119,6 +122,19 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         } catch {}
       }
     }
+  }
+
+  function progress(sessionId: string, event: Record<string, unknown>) {
+    const saved = db.progress(sessionId, event);
+    broadcast({ ...saved, eventType: event.type, type: 'progress_event' });
+  }
+  async function effectiveContext(model = c.model) {
+    const metadata = c.apiKey ? await client.modelLimits(model) : undefined;
+    const provider = metadata?.contextWindow;
+    const fallback = c.contextWindow ?? 131072;
+    const window = provider && provider >= 4096 ? c.contextMode === 'manual' ? Math.min(fallback, provider) : provider : fallback;
+    const output = Math.min(c.maxOutputTokens ?? 4096, metadata?.maxOutputTokens ?? Infinity, Math.floor(window / 2));
+    return { config: { ...c, contextWindow: window, maxOutputTokens: output }, limitSource: (c.contextMode === 'manual' ? 'manual' : provider ? 'provider' : 'fallback') as 'manual' | 'provider' | 'fallback' };
   }
 
   interface PendingApproval {
@@ -192,7 +208,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
         res.writeHead(401); res.end('Unauthorized'); return;
       }
 
-      if (pathname === '/app.css' || pathname === '/app.js' || pathname === '/team-map.js') {
+      if (['/app.css', '/app.js', '/team-map.js', '/chat.css', '/chat-output.js'].includes(pathname)) {
         res.writeHead(200, { 'Content-Type': pathname.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8' });
         res.end(fs.readFileSync(path.join(__dirname, 'public', pathname.slice(1))));
         return;
@@ -327,6 +343,29 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
       try {
         if (msg.type === 'get_team') {
           ws.send(JSON.stringify({ type: 'team_config', ...teamConfig() }));
+        } else if (msg.type === 'get_mcp' || msg.type === 'configure_mcp') {
+          if (msg.type === 'configure_mcp') {
+            if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi MCP.');
+            const incoming = msg.servers;
+            if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) throw new Error('Cấu hình MCP không hợp lệ.');
+            const merged = Object.fromEntries(Object.entries(incoming).map(([id, raw]) => {
+              if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [id, raw];
+              const prior = c.mcpServers?.[id];
+              const next = { ...(prior || {}), ...raw } as Record<string, unknown>;
+              if (prior?.transport === 'http' && next.transport === 'http' && typeof next.url === 'string') {
+                const safeUrl = new URL(prior.url); safeUrl.search = ''; safeUrl.hash = '';
+                if (next.url === safeUrl.toString()) next.url = prior.url;
+              }
+              return [id, next];
+            }));
+            const servers = mcpServersSchema.parse(merged);
+            const file = path.join(c.workspace, '.vibe', 'config.json');
+            let saved: Record<string, unknown> = {}; try { saved = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+            fs.writeFileSync(file, JSON.stringify({ ...saved, mcpServers: servers }, null, 2));
+            c = { ...c, mcpServers: servers }; client = new ModelClient(c);
+          }
+          const registry = McpRegistry.forWorkspace(c.workspace, c.mcpServers || {});
+          ws.send(JSON.stringify({ type: 'mcp_status', servers: await registry.discover(), saved: msg.type === 'configure_mcp' }));
         } else if (msg.type === 'configure_team') {
           if (busy) throw new Error('Hãy dừng tác vụ trước khi đổi phân vai.');
           const data = teamSchema.parse(msg);
@@ -384,7 +423,7 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
           ws.send(JSON.stringify({ type: 'sessions', sessions: db.sessions() }));
         } else if (msg.type === 'get_conversation') {
           const sessionId = String(msg.sessionId || '');
-          const rows = db.db.prepare('SELECT agent_id,content FROM messages WHERE session_id=? ORDER BY id').all(sessionId) as { agent_id: string; content: string }[];
+          const messages = db.transcript(sessionId);
           const tasks = db.tasks(sessionId).map(task => ({ ...task, phase: taskPhase(task) }));
           let gate = null;
           let pipeline = null;
@@ -395,8 +434,12 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             catch { /* Sessions created before pipeline reporting have no report. */ }
           }
           const memory = db.conversation(sessionId);
-          const manager = new ConversationContext(c, memory);
-          ws.send(JSON.stringify({ type: 'conversation', sessionId, tasks, gate, pipeline, messages: rows.map(row => ({ role: row.agent_id === 'user' ? 'user' : 'assistant', content: row.content })), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: manager.stats(systemPrompt('general', c.workspace), toolDefinitions), memorySummary: memory.summary }));
+          let stats = db.context(sessionId);
+          if (!stats) {
+            const limits = await effectiveContext(db.sessionInfo(sessionId)?.model || c.model);
+            stats = { ...new ConversationContext(limits.config, memory).stats(systemPrompt('general', c.workspace), toolDefinitions), limitSource: limits.limitSource };
+          }
+          ws.send(JSON.stringify({ type: 'conversation', sessionId, tasks, gate, pipeline, messages, progress: db.progressHistory(sessionId), summary: tasks.map(task => `${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n'), context: stats, memorySummary: memory.summary }));
         } else if (msg.type === 'approval_response') {
           const p = pendingApprovals.get(msg.id);
           if (p) {
@@ -427,7 +470,11 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               const sessionId = String(msg.sessionId || '');
               if (!/^chat-[a-zA-Z0-9-]{1,80}$/.test(sessionId)) throw new Error('Chọn một cuộc trò chuyện để nén ngữ cảnh.');
               const memory = db.conversation(sessionId);
-              const manager = new ConversationContext(c, memory, event => broadcast({ ...event, sessionId }), state => db.saveConversation(sessionId, state));
+              const limits = await effectiveContext();
+              const manager = new ConversationContext(limits.config, memory, event => {
+                if (event.type === 'context_stats') { event.stats.limitSource = limits.limitSource; db.saveContext(sessionId, event.stats, c.model); }
+                broadcast({ ...event, sessionId });
+              }, state => db.saveConversation(sessionId, state));
               await manager.prepare(systemPrompt('general', c.workspace), toolDefinitions, client, c.model, activeAbort.signal, true);
               broadcast({ type: 'memory_summary', sessionId, summary: memory.summary });
               broadcast({ type: 'stream_end' });
@@ -444,14 +491,22 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
                 if (typeof ev === 'string') {
                   broadcast({ type: 'terminal_log', text: ev });
                 } else {
-                  if (ev.type === 'session_start') teamworkState = { sessionId: ev.sessionId, goal: ev.goal, tasks: [], status: 'running' };
+                  if (ev.type === 'session_start') {
+                    teamworkState = { sessionId: ev.sessionId, goal: ev.goal, tasks: [], status: 'running' };
+                    db.message(ev.sessionId, 'user', arg);
+                    broadcast({ type: 'chat_session', previousSessionId: msg.sessionId, sessionId: ev.sessionId });
+                  }
                   if (ev.agentId && !ev.taskId && ev.role === 'planner') teamworkState = { ...teamworkState, planner: { ...teamworkState?.planner, ...ev } };
                   if (ev.type === 'task_snapshot' || ev.type === 'session_end') teamworkState = { ...teamworkState, ...ev };
+                  if (ev.type === 'session_end' && ev.message && ['failed', 'cancelled'].includes(String(ev.status))) db.message(teamworkState.sessionId, 'assistant', `Teamwork ${ev.status}: ${ev.message}`);
+                  if (teamworkState?.sessionId && ev.type !== 'task_snapshot') progress(teamworkState.sessionId, { type: ev.type, agentId: ev.agentId, taskId: ev.taskId, tool: ev.step, model: ev.model, status: ev.status, message: ev.message || `${ev.type}${ev.taskId ? ': ' + ev.taskId : ''}` });
                   broadcast({ type: 'teamwork_event', event: ev });
                 }
               });
 
-              broadcast({ type: 'stream_chunk', token: `**Kết quả Teamwork**\n\nNghiệm thu: ${result.gate.verdict}\n${result.gate.reasons.join('\n')}\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}` });
+              const teamworkAnswer = `**Kết quả Teamwork**\n\nNghiệm thu: ${result.gate.verdict}\n${result.gate.reasons.join('\n')}\n\n${tw.tasks.map(task => `• ${task.title}: ${task.status}\n${task.resultSummary || task.error || ''}`).join('\n\n') || 'Chưa có tác vụ được hoàn thành.'}`;
+              if (teamworkState?.sessionId) db.message(teamworkState.sessionId, 'assistant', teamworkAnswer);
+              broadcast({ type: 'stream_chunk', token: teamworkAnswer });
 
               const diff = await getDiffText();
               broadcast({ type: 'diff', diff });
@@ -521,8 +576,10 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
             const sessionId = typeof msg.sessionId === 'string' && /^chat-[a-zA-Z0-9-]{1,80}$/.test(msg.sessionId) ? msg.sessionId : `chat-${crypto.randomUUID()}`;
             const memory = db.conversation(sessionId);
             db.session(sessionId, 'running', c.model, line.slice(0, 100));
-            const saveMessage = (role: string, content: string) => db.db.prepare('INSERT INTO messages(session_id,agent_id,ts,content) VALUES(?,?,?,?)').run(sessionId, role, new Date().toISOString(), content);
+            const saveMessage = (role: 'user' | 'assistant', content: string) => db.message(sessionId, role, content);
             saveMessage('user', line);
+            broadcast({ type: 'chat_session', previousSessionId: msg.sessionId, sessionId });
+            progress(sessionId, { type: 'run_start', status: 'running', message: 'Đang xử lý yêu cầu.' });
             const agent = new Agent(
               'agent-general',
               chatRole,
@@ -534,6 +591,8 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
 
             let isThinking = false;
             let fullResponse = '';
+            let activeModel = c.model;
+            const pendingTools = new Map<string, string>();
             try {
             const result = await agent.run(line, activeAbort.signal, (token) => {
               fullResponse += token;
@@ -552,17 +611,33 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               state: memory,
               recall: (query, limit, beforeId) => db.recall(sessionId, query, limit, beforeId),
               namedAgentId: selected?.id,
-              onContext: event => broadcast({ ...event, sessionId }),
+              onModel: model => { activeModel = model; progress(sessionId, { type: 'model_selected', model, agentId: selected?.id || 'agent-general', status: 'running', message: `Đang dùng ${model}.` }); },
+              onContext: event => {
+                if (event.type === 'context_stats') { event.stats.limitSource = 'runtime'; db.saveContext(sessionId, event.stats, activeModel); }
+                broadcast({ ...event, sessionId });
+              },
               checkpoint: state => db.saveConversation(sessionId, state),
-              onItem: item => db.archiveItem(sessionId, item)
+              onItem: item => {
+                db.archiveItem(sessionId, item);
+                for (const call of item.tool_calls || []) { pendingTools.set(call.id, call.function.name); progress(sessionId, { type: 'tool_start', tool: call.function.name, agentId: selected?.id || 'agent-general', status: 'running', message: `Đang chạy ${call.function.name}.` }); }
+                if (item.role === 'tool') {
+                  const tool = pendingTools.get(item.tool_call_id || '') || 'tool'; let ok: boolean | undefined;
+                  try { const value = JSON.parse(item.content || '{}'); if (typeof value.ok === 'boolean') ok = value.ok; } catch {}
+                  progress(sessionId, { type: 'tool_end', tool, agentId: selected?.id || 'agent-general', status: ok === false ? 'failed' : 'completed', message: `${tool}: ${ok === false ? 'lỗi' : 'đã trả kết quả'}.` });
+                  pendingTools.delete(item.tool_call_id || '');
+                }
+              }
             });
             broadcast({ type: 'memory_summary', sessionId, summary: memory.summary });
             saveMessage('assistant', fullResponse || result);
-            db.session(sessionId, 'completed', c.model);
+            db.session(sessionId, 'completed', activeModel);
+            progress(sessionId, { type: 'run_end', status: 'completed', message: 'Đã hoàn thành yêu cầu.' });
             } catch (error) {
               if (db.db.open) db.saveConversation(sessionId, memory);
-              if (fullResponse) saveMessage('assistant', fullResponse);
-              db.session(sessionId, activeAbort.signal.aborted ? 'cancelled' : 'failed', c.model);
+              saveMessage('assistant', `${fullResponse}${fullResponse ? '\n\n' : ''}**Lỗi:** ${error instanceof Error ? error.message : String(error)}`);
+              const status = activeAbort.signal.aborted ? 'cancelled' : 'failed';
+              db.session(sessionId, status, activeModel);
+              progress(sessionId, { type: 'run_end', status, message: status === 'cancelled' ? 'Đã dừng theo yêu cầu.' : 'Phiên gặp lỗi; xem thông báo chi tiết.' });
               throw error;
             }
 
@@ -576,11 +651,12 @@ export async function startStudio(options?: number | StudioOptions): Promise<Stu
               broadcast({ type: 'teamwork_event', event: { type: 'session_end', sessionId: teamworkState.sessionId, status: interruptedStatus, message: interruptedStatus === 'cancelled' ? 'Phiên đã dừng.' : 'Phiên dừng do lỗi; xem nhật ký để biết nguyên nhân.' } });
             }
             busy = false; activeAbort = undefined; activeTeam = undefined;
+            broadcast({ type: 'sessions', sessions: db.sessions() });
             broadcast({ type: 'run_end' });
           }
         }
       } catch (err: any) {
-        if (['configure', 'configure_team', 'get_team', 'get_models', 'search_skills', 'get_conversation'].includes(msg.type)) {
+        if (['configure', 'configure_team', 'get_team', 'get_mcp', 'configure_mcp', 'get_models', 'search_skills', 'get_conversation'].includes(msg.type)) {
           ws.send(JSON.stringify({ type: 'error', message: err?.message || String(err) }));
           return;
         }

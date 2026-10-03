@@ -12,6 +12,8 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 
 - Chọn thư mục dự án, tạo chat và mở lại lịch sử đã lưu.
 - Nhận phản hồi trực tiếp khi AI đang trả lời; dừng tác vụ ngay trên giao diện.
+- Theo dõi tiến độ ngay trong chat: công cụ đang chạy, bước đã xong và lỗi cần xử lý; mở lại phiên để xem các mốc đã lưu.
+- Câu trả lời có tiêu đề, danh sách, bảng, màu code và hiệu ứng streaming; sao chép toàn bộ câu trả lời hoặc từng khối code.
 - Đọc, tìm kiếm và chỉnh sửa tệp, xem Git diff, chạy lệnh và kiểm thử theo quyền của agent.
 - Kết nối nhà cung cấp API tương thích OpenAI bằng URL, khóa API và tên model.
 
@@ -43,10 +45,19 @@ Không gian làm việc AI trên Windows để trò chuyện với dự án, vi�
 
 - Lưu lịch sử, lời gọi công cụ và kết quả theo từng cuộc trò chuyện.
 - Chế độ tự động dùng cửa sổ context do nhà cung cấp công bố; có giới hạn thủ công/dự phòng khi API thiếu metadata.
+- Context dự phòng mặc định **131.072 token**; bảng ngữ cảnh phân biệt cửa sổ hiệu lực, ngân sách đầu vào và phần dành cho đầu ra. Lịch sử hiển thị dung lượng thực tế đã dùng trong phiên.
 - Hiển thị dung lượng ước tính, token đầu vào/đầu ra và số lần nén; hỗ trợ nén thủ công.
 - Nén lịch sử cũ khi cần, giữ yêu cầu và tra cứu lại bản ghi gốc của tác vụ.
 - Đặt ngân sách lượt suy luận và lượt công cụ về **0** để không giới hạn số lượt; nút Dừng và kiểm tra lặp không tiến triển vẫn hoạt động.
 - Khi stream bị ngắt, tiếp tục trên cùng model với tối đa hai lần phục hồi; giữ checkpoint và loại bỏ lời gọi công cụ chưa hoàn chỉnh.
+
+### Kết nối nhiều MCP
+
+- Thêm nhiều server trong mục **MCP**, hỗ trợ Streamable HTTP và chương trình Stdio chạy trên máy.
+- Xem trạng thái kết nối và số công cụ của từng server; bật/tắt hoặc xóa từng cấu hình.
+- Agent tự thấy và gọi các công cụ được phép, với tên riêng theo server để tránh trùng.
+- Các agent chạy song song có thể dùng nhiều server đồng thời; lỗi của một kết nối được giữ riêng.
+- Công cụ MCP được lọc theo vai trò và tính chất chỉ đọc. Tác vụ ghi không tự được gửi lại khi lỗi kết nối.
 
 ## Tải và bắt đầu
 
